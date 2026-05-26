@@ -146,18 +146,18 @@ interface ValTemplateRow {
   }
 }
 
-function rowToValTemplate(cols: string[], r: unknown[]): ValTemplateRow {
-  const get = (name: string) => (r as unknown[])[cols.indexOf(name)]
+function rowToValTemplate(row: unknown): ValTemplateRow {
+  const r = row as unknown as Record<string, unknown>
   return {
-    document_id: get('document_id') as string,
-    version: get('version') as number,
-    created_at: get('created_at') as string,
+    document_id: r['document_id'] as string,
+    version: r['version'] as number,
+    created_at: r['created_at'] as string,
     data: {
-      name: get('name') as string,
-      description: (get('description') as string | null) ?? '',
-      column_count: get('column_count') as number | null,
-      created_by: get('created_by') as string | null,
-      source_file: get('source_file_file_id') as string | null,
+      name: r['name'] as string,
+      description: (r['description'] as string | null) ?? '',
+      column_count: r['column_count'] as number | null,
+      created_by: r['created_by'] as string | null,
+      source_file: r['source_file_file_id'] as string | null,
     },
   }
 }
@@ -186,9 +186,9 @@ export async function queryValTemplates(
       [pattern]
     ),
   ])
-  const total = (count.rows[0] as unknown[])[count.columns.indexOf('total')] as number
+  const total = (count.rows[0] as unknown as Record<string, unknown>)['total'] as number
   return {
-    items: data.rows.map(r => rowToValTemplate(data.columns, r as unknown[])),
+    items: data.rows.map(r => rowToValTemplate(r)),
     total,
     pages: Math.max(1, Math.ceil(total / pageSize)),
   }
@@ -201,7 +201,7 @@ export async function getValTemplateDoc(id: string): Promise<ValTemplateRow> {
     [id]
   )
   if (result.rows.length === 0) throw new Error(`404: Template '${id}' not found`)
-  return rowToValTemplate(result.columns, result.rows[0] as unknown[])
+  return rowToValTemplate(result.rows[0])
 }
 
 interface ColumnRow {
@@ -229,23 +229,21 @@ export async function queryColumnsForTemplate(templateDocId: string): Promise<Co
      ORDER BY column_index`,
     [templateDocId]
   )
-  const cols = result.columns
   return result.rows.map(row => {
-    const r = row as unknown[]
-    const get = (name: string) => r[cols.indexOf(name)]
+    const r = row as unknown as Record<string, unknown>
     return {
-      document_id: get('document_id') as string,
+      document_id: r['document_id'] as string,
       data: {
-        column_name: get('column_name') as string,
-        display_name: get('display_name') as string | null,
-        column_index: get('column_index') as number,
-        column_type: get('column_type') as string,
-        required: get('required') as boolean | null,
-        lov_terminology: get('lov_terminology') as string | null,
-        description: get('description') as string | null,
-        pattern: get('pattern') as string | null,
-        min_value: get('min_value') as number | null,
-        max_value: get('max_value') as number | null,
+        column_name: r['column_name'] as string,
+        display_name: r['display_name'] as string | null,
+        column_index: r['column_index'] as number,
+        column_type: r['column_type'] as string,
+        required: r['required'] as boolean | null,
+        lov_terminology: r['lov_terminology'] as string | null,
+        description: r['description'] as string | null,
+        pattern: r['pattern'] as string | null,
+        min_value: r['min_value'] as number | null,
+        max_value: r['max_value'] as number | null,
       },
     }
   })
