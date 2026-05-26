@@ -5,7 +5,7 @@ import {
   getDocument,
   patchDocument,
   deleteDocument,
-  downloadFile,
+  getFileDownloadUrl,
   WIP_NAMESPACE,
 } from './wip-api.js'
 
@@ -105,10 +105,8 @@ export function downloadTemplateFileHandler(): RequestHandler {
         res.status(404).json({ error: 'No source file attached to this template' })
         return
       }
-      const { buffer, contentType, filename } = await downloadFile(fileId)
-      res.setHeader('Content-Type', contentType)
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-      res.send(buffer)
+      const downloadUrl = await getFileDownloadUrl(fileId)
+      res.redirect(downloadUrl)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       const status = message.includes('404') ? 404 : 500

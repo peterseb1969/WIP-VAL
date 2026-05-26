@@ -295,7 +295,7 @@ export function createSaveHandler(): RequestHandler {
             termValue,
             col.displayName || col.columnName
           )
-          await upsertTerms(term.terminology_id, col.lovValues ?? [])
+          await upsertTerms(term.terminology_id, WIP_NAMESPACE, col.lovValues ?? [])
           lovTermIds[col.columnIndex] = term.terminology_id
           terminologiesCreated.push(termValue)
         })
