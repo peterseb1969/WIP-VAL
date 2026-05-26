@@ -2,6 +2,7 @@ import type { Request, Response, RequestHandler } from 'express'
 import {
   getTemplateIdByValue,
   queryDocuments,
+  queryColumnsForTemplate,
   getDocument,
   patchDocument,
   deleteDocument,
@@ -38,21 +39,10 @@ export function getValTemplateHandler(): RequestHandler {
   return async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params as { id: string }
     try {
-      const [templateDoc, colTemplateId] = await Promise.all([
+      const [templateDoc, columns] = await Promise.all([
         getDocument(id),
-        getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN'),
+        queryColumnsForTemplate(id),
       ])
-
-      const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
-        filters: [{ field: 'data.template', operator: 'eq', value: id }],
-        pageSize: 100,
-      })
-
-      const columns = [...colsResult.items].sort((a, b) => {
-        const aData = a.data as Record<string, unknown>
-        const bData = b.data as Record<string, unknown>
-        return ((aData.column_index as number) ?? 0) - ((bData.column_index as number) ?? 0)
-      })
 
       res.json({ template: templateDoc, columns })
     } catch (err: unknown) {
@@ -69,17 +59,11 @@ export function deleteValTemplateHandler(): RequestHandler {
   return async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params as { id: string }
     try {
-      const colTemplateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN')
-      const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
-        filters: [{ field: 'data.template', operator: 'eq', value: id }],
-        pageSize: 100,
-      })
+      const columns = await queryColumnsForTemplate(id)
 
       // Delete all column documents then the template document in parallel
       await Promise.all([
-        ...colsResult.items.map(item =>
-          deleteDocument((item as Record<string, unknown>)['document_id'] as string)
-        ),
+        ...columns.map(col => deleteDocument(col.document_id)),
         deleteDocument(id),
       ])
 

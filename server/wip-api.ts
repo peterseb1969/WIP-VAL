@@ -14,10 +14,16 @@ function wip() {
   return _client
 }
 
+const _templateIdCache = new Map<string, string>()
+
 export async function getTemplateIdByValue(namespace: string, value: string): Promise<string> {
+  const key = `${namespace}:${value}`
+  const cached = _templateIdCache.get(key)
+  if (cached) return cached
   const list = await wip().templates.listTemplates({ namespace, page_size: 100 })
   const match = list.items.find(t => t.value === value)
   if (!match) throw new Error(`Template '${value}' not found in namespace '${namespace}'`)
+  _templateIdCache.set(key, match.template_id)
   return match.template_id
 }
 
@@ -123,6 +129,53 @@ export async function queryDocuments(
 export async function getDocument(documentId: string): Promise<Record<string, unknown>> {
   const doc = await wip().documents.getLatestDocument(documentId)
   return doc as unknown as Record<string, unknown>
+}
+
+interface ColumnRow {
+  document_id: string
+  data: {
+    column_name: string
+    display_name: string | null
+    column_index: number
+    column_type: string
+    required: boolean | null
+    lov_terminology: string | null
+    description: string | null
+    pattern: string | null
+    min_value: number | null
+    max_value: number | null
+  }
+}
+
+export async function queryColumnsForTemplate(templateDocId: string): Promise<ColumnRow[]> {
+  const result = await wip().reporting.runQuery(
+    `SELECT document_id, column_name, display_name, column_index, column_type,
+            required, lov_terminology, description, pattern, min_value, max_value
+     FROM doc_val_column
+     WHERE template = $1 AND status = 'active'
+     ORDER BY column_index`,
+    [templateDocId]
+  )
+  const cols = result.columns
+  return result.rows.map(row => {
+    const r = row as unknown[]
+    const get = (name: string) => r[cols.indexOf(name)]
+    return {
+      document_id: get('document_id') as string,
+      data: {
+        column_name: get('column_name') as string,
+        display_name: get('display_name') as string | null,
+        column_index: get('column_index') as number,
+        column_type: get('column_type') as string,
+        required: get('required') as boolean | null,
+        lov_terminology: get('lov_terminology') as string | null,
+        description: get('description') as string | null,
+        pattern: get('pattern') as string | null,
+        min_value: get('min_value') as number | null,
+        max_value: get('max_value') as number | null,
+      },
+    }
+  })
 }
 
 export async function getTermValues(terminologyId: string): Promise<Set<string>> {
