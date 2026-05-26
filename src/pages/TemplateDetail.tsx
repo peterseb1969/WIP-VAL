@@ -290,7 +290,7 @@ export default function TemplateDetail() {
             <tbody>
               {columns.map((col, i) => (
                 <tr
-                  key={col.document_id}
+                  key={col.document_id ?? i}
                   className={`border-b border-gray-100 last:border-0 hover:bg-gray-50 border-l-4 ${
                     col.dirty ? 'border-l-accent bg-orange-50/30' : 'border-l-transparent'
                   }`}

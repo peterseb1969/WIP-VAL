@@ -1,9 +1,8 @@
 import type { Request, Response, RequestHandler } from 'express'
 import {
-  getTemplateIdByValue,
-  queryDocuments,
+  queryValTemplates,
+  getValTemplateDoc,
   queryColumnsForTemplate,
-  getDocument,
   patchDocument,
   deleteDocument,
   downloadFile,
@@ -15,16 +14,11 @@ import {
 export function listValTemplatesHandler(): RequestHandler {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const templateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_TEMPLATE')
       const search = (req.query.search as string | undefined ?? '').trim()
       const page = Math.max(1, parseInt(req.query.page as string || '1', 10))
       const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize as string || '20', 10)))
 
-      const filters = search
-        ? [{ field: 'data.name', operator: 'regex', value: `(?i)${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` }]
-        : undefined
-
-      const data = await queryDocuments(templateId, WIP_NAMESPACE, { filters, page, pageSize })
+      const data = await queryValTemplates(search, page, pageSize)
       res.json(data)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
@@ -40,7 +34,7 @@ export function getValTemplateHandler(): RequestHandler {
     const { id } = req.params as { id: string }
     try {
       const [templateDoc, columns] = await Promise.all([
-        getDocument(id),
+        getValTemplateDoc(id),
         queryColumnsForTemplate(id),
       ])
 
@@ -82,9 +76,8 @@ export function downloadTemplateFileHandler(): RequestHandler {
   return async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params as { id: string }
     try {
-      const templateDoc = await getDocument(id)
-      const data = (templateDoc as Record<string, unknown>)['data'] as Record<string, unknown>
-      const fileId = data['source_file'] as string | undefined
+      const templateDoc = await getValTemplateDoc(id)
+      const fileId = templateDoc.data.source_file
       if (!fileId) {
         res.status(404).json({ error: 'No source file attached to this template' })
         return

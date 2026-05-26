@@ -133,6 +133,77 @@ export async function getDocument(documentId: string): Promise<Record<string, un
   return doc as unknown as Record<string, unknown>
 }
 
+interface ValTemplateRow {
+  document_id: string
+  version: number
+  created_at: string
+  data: {
+    name: string
+    description: string
+    column_count: number | null
+    created_by: string | null
+    source_file: string | null
+  }
+}
+
+function rowToValTemplate(cols: string[], r: unknown[]): ValTemplateRow {
+  const get = (name: string) => (r as unknown[])[cols.indexOf(name)]
+  return {
+    document_id: get('document_id') as string,
+    version: get('version') as number,
+    created_at: get('created_at') as string,
+    data: {
+      name: get('name') as string,
+      description: (get('description') as string | null) ?? '',
+      column_count: get('column_count') as number | null,
+      created_by: get('created_by') as string | null,
+      source_file: get('source_file_file_id') as string | null,
+    },
+  }
+}
+
+const VAL_TEMPLATE_COLS = `
+  document_id, name, description, column_count, data_created_by AS created_by,
+  source_file_file_id, created_at, version`
+
+export async function queryValTemplates(
+  search: string,
+  page: number,
+  pageSize: number
+): Promise<{ items: ValTemplateRow[]; total: number; pages: number }> {
+  const offset = (page - 1) * pageSize
+  const pattern = search ? `%${search.replace(/[%_]/g, '\\$&')}%` : '%'
+  const [data, count] = await Promise.all([
+    wip().reporting.runQuery(
+      `SELECT ${VAL_TEMPLATE_COLS} FROM doc_val_template
+       WHERE status = 'active' AND name ILIKE $1
+       ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [pattern, pageSize, offset]
+    ),
+    wip().reporting.runQuery(
+      `SELECT COUNT(*)::int AS total FROM doc_val_template
+       WHERE status = 'active' AND name ILIKE $1`,
+      [pattern]
+    ),
+  ])
+  const total = (count.rows[0] as unknown[])[count.columns.indexOf('total')] as number
+  return {
+    items: data.rows.map(r => rowToValTemplate(data.columns, r as unknown[])),
+    total,
+    pages: Math.max(1, Math.ceil(total / pageSize)),
+  }
+}
+
+export async function getValTemplateDoc(id: string): Promise<ValTemplateRow> {
+  const result = await wip().reporting.runQuery(
+    `SELECT ${VAL_TEMPLATE_COLS} FROM doc_val_template
+     WHERE document_id = $1 AND status = 'active' LIMIT 1`,
+    [id]
+  )
+  if (result.rows.length === 0) throw new Error(`404: Template '${id}' not found`)
+  return rowToValTemplate(result.columns, result.rows[0] as unknown[])
+}
+
 interface ColumnRow {
   document_id: string
   data: {
