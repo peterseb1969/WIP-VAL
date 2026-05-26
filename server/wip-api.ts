@@ -94,10 +94,12 @@ export function lovTerminologyValue(templateName: string, columnName: string): s
 export async function uploadFileToWip(
   buffer: Buffer,
   filename: string,
-  contentType: string,
+  _contentType: string,
   namespace: string
 ): Promise<{ file_id: string }> {
-  const blob = new Blob([new Uint8Array(buffer)], { type: contentType })
+  // WIP file store wildcard MIME matching is broken (CASE-60) — upload as
+  // octet-stream which is always accepted, and allow it on the template field.
+  const blob = new Blob([new Uint8Array(buffer)], { type: 'application/octet-stream' })
   const file = await wip().files.uploadFile(blob, filename, { category: 'source_spreadsheet' }, namespace)
   return { file_id: file.file_id }
 }
@@ -197,8 +199,15 @@ export async function deleteDocument(documentId: string): Promise<void> {
   await wip().documents.deleteDocument(documentId)
 }
 
-// Returns a time-limited presigned MinIO URL — redirect the browser to it directly.
-export async function getFileDownloadUrl(fileId: string): Promise<string> {
-  const { download_url } = await wip().files.getDownloadUrl(fileId, 3600)
-  return download_url
+export async function downloadFile(fileId: string): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+  const [blob, meta] = await Promise.all([
+    wip().files.downloadFileContent(fileId),
+    wip().files.getFile(fileId),
+  ])
+  const buffer = Buffer.from(await blob.arrayBuffer())
+  return {
+    buffer,
+    contentType: meta.content_type || 'application/octet-stream',
+    filename: meta.filename || fileId,
+  }
 }
