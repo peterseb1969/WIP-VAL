@@ -1,0 +1,56 @@
+[
+  {
+    "value": "VAL_COLUMN_TYPE",
+    "label": "Column Data Type",
+    "description": "Data types a template column can be validated as.",
+    "namespace": "wip-val",
+    "terms": [
+      { "value": "string",   "label": "String",                "description": "Free-text string value.",                                                   "sort_order": 1 },
+      { "value": "number",   "label": "Number",                "description": "Any numeric value (integer or decimal).",                                   "sort_order": 2 },
+      { "value": "integer",  "label": "Integer",               "description": "Whole number only.",                                                        "sort_order": 3 },
+      { "value": "boolean",  "label": "Boolean",               "description": "True/false value.",                                                         "sort_order": 4 },
+      { "value": "date",     "label": "Date",                  "description": "Date value (YYYY-MM-DD).",                                                   "sort_order": 5 },
+      { "value": "datetime", "label": "Date + Time",           "description": "Date and time value (ISO 8601).",                                            "sort_order": 6 },
+      { "value": "email",    "label": "Email",                 "description": "Valid email address.",                                                       "sort_order": 7 },
+      { "value": "url",      "label": "URL",                   "description": "Valid URL.",                                                                 "sort_order": 8 },
+      { "value": "term",     "label": "Controlled Value (LOV)","description": "Value must be in the column's linked list of values (LOV terminology).",    "sort_order": 9 }
+    ]
+  },
+  {
+    "value": "VAL_RULE_TYPE",
+    "label": "Cross-Column Rule Type",
+    "description": "Types of cross-column validation rules.",
+    "namespace": "wip-val",
+    "terms": [
+      { "value": "conditional_required",  "label": "Conditional Required",  "description": "Target column is required when source column equals condition_value.",       "sort_order": 1 },
+      { "value": "conditional_forbidden", "label": "Conditional Forbidden", "description": "Target column must be empty when source column equals condition_value.",     "sort_order": 2 },
+      { "value": "mutual_exclusion",      "label": "Mutual Exclusion",      "description": "Source and target columns cannot both have values.",                         "sort_order": 3 },
+      { "value": "dependency",            "label": "Dependency",            "description": "Source column requires target column to also be present.",                   "sort_order": 4 },
+      { "value": "regex_match",           "label": "Regex Match",           "description": "Source column value must match the given regex pattern.",                    "sort_order": 5 },
+      { "value": "range",                 "label": "Range Check",           "description": "Source column numeric value must be within min/max bounds.",                 "sort_order": 6 }
+    ]
+  },
+  {
+    "value": "VAL_FAILURE_SEVERITY",
+    "label": "Validation Failure Severity",
+    "description": "Severity level of a validation failure.",
+    "namespace": "wip-val",
+    "terms": [
+      { "value": "error",   "label": "Error",   "description": "Hard validation failure — data is invalid and must be corrected.", "sort_order": 1 },
+      { "value": "warning", "label": "Warning", "description": "Soft failure — data is unusual but not necessarily wrong.",        "sort_order": 2 },
+      { "value": "info",    "label": "Info",    "description": "Informational note — no action required.",                         "sort_order": 3 }
+    ]
+  },
+  {
+    "value": "VAL_RUN_STATUS",
+    "label": "Validation Run Status",
+    "description": "Lifecycle status of a validation run.",
+    "namespace": "wip-val",
+    "terms": [
+      { "value": "pending",  "label": "Pending",  "description": "Run created, validation not yet started.",  "sort_order": 1 },
+      { "value": "running",  "label": "Running",  "description": "Validation in progress.",                   "sort_order": 2 },
+      { "value": "complete", "label": "Complete", "description": "Validation finished successfully.",          "sort_order": 3 },
+      { "value": "failed",   "label": "Failed",   "description": "Validation aborted due to a system error.", "sort_order": 4 }
+    ]
+  }
+]

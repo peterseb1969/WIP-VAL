@@ -1,0 +1,125 @@
+[
+  {
+    "value": "VAL_TEMPLATE",
+    "label": "Validation Template",
+    "description": "A validation template defining the expected schema for an incoming data spreadsheet.",
+    "namespace": "wip-val",
+    "identity_fields": ["name"],
+    "fields": [
+      { "name": "name",         "label": "Template Name",      "type": "string",  "mandatory": true  },
+      { "name": "description",  "label": "Description",        "type": "string"                       },
+      {
+        "name": "source_file",
+        "label": "Source Spreadsheet",
+        "type": "file",
+        "file_config": {
+          "allowed_types": [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv"
+          ]
+        }
+      },
+      { "name": "column_count", "label": "Column Count",       "type": "integer" },
+      { "name": "created_by",   "label": "Created By",         "type": "string"  }
+    ]
+  },
+  {
+    "value": "VAL_COLUMN",
+    "label": "Validation Column Definition",
+    "description": "Defines the validation rules for a single column within a validation template.",
+    "namespace": "wip-val",
+    "identity_fields": ["template", "column_name"],
+    "fields": [
+      {
+        "name": "template",
+        "label": "Validation Template",
+        "type": "reference",
+        "reference_type": "document",
+        "target_templates": ["VAL_TEMPLATE"],
+        "mandatory": true
+      },
+      { "name": "column_name",    "label": "Column Name",              "type": "string",  "mandatory": true  },
+      { "name": "display_name",   "label": "Display Name",             "type": "string"                      },
+      { "name": "column_index",   "label": "Column Index",             "type": "integer", "mandatory": true  },
+      { "name": "column_type",    "label": "Column Type",              "type": "term",    "mandatory": true,  "terminology_ref": "VAL_COLUMN_TYPE" },
+      { "name": "required",       "label": "Required",                 "type": "boolean"                     },
+      { "name": "pattern",        "label": "Validation Pattern (regex)","type": "string"                     },
+      { "name": "min_value",      "label": "Minimum Value",            "type": "number"                      },
+      { "name": "max_value",      "label": "Maximum Value",            "type": "number"                      },
+      { "name": "lov_terminology","label": "LOV Terminology",          "type": "reference", "reference_type": "terminology" },
+      { "name": "description",    "label": "Description",              "type": "string"                      }
+    ]
+  },
+  {
+    "value": "VAL_CROSS_RULE",
+    "label": "Cross-Column Validation Rule",
+    "description": "Defines a cross-column validation rule within a validation template.",
+    "namespace": "wip-val",
+    "identity_fields": ["template", "rule_type", "source_column"],
+    "fields": [
+      {
+        "name": "template",
+        "label": "Validation Template",
+        "type": "reference",
+        "reference_type": "document",
+        "target_templates": ["VAL_TEMPLATE"],
+        "mandatory": true
+      },
+      { "name": "rule_type",      "label": "Rule Type",     "type": "term",   "mandatory": true, "terminology_ref": "VAL_RULE_TYPE"         },
+      { "name": "source_column",  "label": "Source Column", "type": "string", "mandatory": true                                             },
+      { "name": "target_column",  "label": "Target Column", "type": "string"                                                                },
+      { "name": "condition_value","label": "Condition Value","type": "string"                                                               },
+      { "name": "error_message",  "label": "Error Message", "type": "string"                                                                },
+      { "name": "severity",       "label": "Severity",      "type": "term",                      "terminology_ref": "VAL_FAILURE_SEVERITY"  }
+    ]
+  },
+  {
+    "value": "VAL_RUN",
+    "label": "Validation Run",
+    "description": "Records a single execution of a validation check on a data spreadsheet against a template.",
+    "namespace": "wip-val",
+    "identity_fields": [],
+    "fields": [
+      {
+        "name": "source_file",
+        "label": "Source Data File",
+        "type": "file",
+        "mandatory": true,
+        "file_config": {
+          "allowed_types": [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv"
+          ]
+        }
+      },
+      {
+        "name": "template",
+        "label": "Validation Template",
+        "type": "reference",
+        "reference_type": "document",
+        "target_templates": ["VAL_TEMPLATE"],
+        "mandatory": true
+      },
+      { "name": "run_status",   "label": "Run Status",   "type": "term",     "mandatory": true, "terminology_ref": "VAL_RUN_STATUS" },
+      { "name": "row_count",    "label": "Row Count",    "type": "integer"                                                          },
+      { "name": "error_count",  "label": "Error Count",  "type": "integer"                                                          },
+      { "name": "warning_count","label": "Warning Count","type": "integer"                                                          },
+      {
+        "name": "edited_file",
+        "label": "Edited File",
+        "type": "file",
+        "file_config": {
+          "allowed_types": [
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv"
+          ]
+        }
+      },
+      { "name": "run_at",  "label": "Run At",  "type": "datetime" },
+      { "name": "run_by",  "label": "Run By",  "type": "string"   }
+    ]
+  }
+]

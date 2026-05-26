@@ -1,0 +1,6 @@
+{
+  "prefix": "wip-val",
+  "description": "Spreadsheet validation — templates, column definitions, cross-column rules, and run history.",
+  "isolation_mode": "open",
+  "deletion_mode": "retain"
+}
