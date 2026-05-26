@@ -131,6 +131,23 @@ function extractLovSheets(wb: XLSX.WorkBook, dataHeaders: string[]): Map<string,
   return lovMap
 }
 
+// ─── Cell color helper ────────────────────────────────────────────────────────
+
+// Returns true when the header cell for the given column index has red font.
+// SheetJS stores font color as ARGB hex (e.g. "FFFF0000") or plain RGB ("FF0000").
+// Thresholds: R > 180, G < 80, B < 80 — covers Excel's standard reds (FF0000, C00000).
+function isHeaderCellRed(ws: XLSX.WorkSheet, colIndex: number): boolean {
+  const addr = XLSX.utils.encode_cell({ r: 0, c: colIndex })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rgb: string | undefined = (ws[addr] as any)?.s?.font?.color?.rgb
+  if (!rgb || rgb.length < 6) return false
+  const hex = rgb.length === 8 ? rgb.slice(2) : rgb  // strip alpha if ARGB
+  const r = parseInt(hex.slice(0, 2), 16)
+  const g = parseInt(hex.slice(2, 4), 16)
+  const b = parseInt(hex.slice(4, 6), 16)
+  return r > 180 && g < 80 && b < 80
+}
+
 // ─── Parse handler ─────────────────────────────────────────────────────────────
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -145,7 +162,7 @@ export function createUploadHandler(): RequestHandler[] {
     }
 
     try {
-      const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true })
+      const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true, cellStyles: true })
       const dataSheetName = wb.SheetNames[0]
       const ws = wb.Sheets[dataSheetName ?? '']
 
@@ -184,7 +201,7 @@ export function createUploadHandler(): RequestHandler[] {
           columnIndex: idx,
           columnName: colName,
           guessedType,
-          required: nonEmpty.length === colValues.length && colValues.length > 0,
+          required: isHeaderCellRed(ws, idx),
           uniqueValueCount: uniqueStrings.length,
           sampleValues,
           lovValues,
