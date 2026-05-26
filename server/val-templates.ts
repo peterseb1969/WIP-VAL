@@ -4,6 +4,8 @@ import {
   queryDocuments,
   getDocument,
   patchDocument,
+  deleteDocument,
+  downloadFile,
   WIP_NAMESPACE,
 } from './wip-api.js'
 
@@ -53,6 +55,60 @@ export function getValTemplateHandler(): RequestHandler {
       })
 
       res.json({ template: templateDoc, columns })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      const status = message.includes('404') ? 404 : 500
+      res.status(status).json({ error: message })
+    }
+  }
+}
+
+// ─── DELETE /api/val-templates/:id ───────────────────────────────────────────
+
+export function deleteValTemplateHandler(): RequestHandler {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params as { id: string }
+    try {
+      const colTemplateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN')
+      const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
+        filters: [{ field: 'data.template', operator: 'eq', value: id }],
+        pageSize: 100,
+      })
+
+      // Delete all column documents then the template document in parallel
+      await Promise.all([
+        ...colsResult.items.map(item =>
+          deleteDocument((item as Record<string, unknown>)['document_id'] as string)
+        ),
+        deleteDocument(id),
+      ])
+
+      res.json({ deleted: true })
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      const status = message.includes('404') ? 404 : 500
+      res.status(status).json({ error: message })
+    }
+  }
+}
+
+// ─── GET /api/val-templates/:id/download ─────────────────────────────────────
+
+export function downloadTemplateFileHandler(): RequestHandler {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { id } = req.params as { id: string }
+    try {
+      const templateDoc = await getDocument(id)
+      const data = (templateDoc as Record<string, unknown>)['data'] as Record<string, unknown>
+      const fileId = data['source_file'] as string | undefined
+      if (!fileId) {
+        res.status(404).json({ error: 'No source file attached to this template' })
+        return
+      }
+      const { buffer, contentType, filename } = await downloadFile(fileId)
+      res.setHeader('Content-Type', contentType)
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      res.send(buffer)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       const status = message.includes('404') ? 404 : 500

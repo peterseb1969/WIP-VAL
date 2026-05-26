@@ -9,6 +9,8 @@ import {
   listValTemplatesHandler,
   getValTemplateHandler,
   patchValTemplateColumnsHandler,
+  deleteValTemplateHandler,
+  downloadTemplateFileHandler,
 } from './val-templates.js'
 import { createValidateHandler } from './validate.js'
 
@@ -74,7 +76,9 @@ app.post('/api/template-parser/save', createSaveHandler())
 // --- Validation templates ---
 app.get('/api/val-templates', listValTemplatesHandler())
 app.get('/api/val-templates/:id', getValTemplateHandler())
+app.get('/api/val-templates/:id/download', downloadTemplateFileHandler())
 app.patch('/api/val-templates/:id/columns', patchValTemplateColumnsHandler())
+app.delete('/api/val-templates/:id', deleteValTemplateHandler())
 
 // --- Document validation ---
 app.post('/api/validate', ...createValidateHandler())

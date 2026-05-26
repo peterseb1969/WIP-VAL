@@ -93,6 +93,7 @@ export default function TemplateDetail() {
   const [template, setTemplate] = useState<TemplateDoc | null>(null)
   const [columns, setColumns] = useState<EditableColumn[]>([])
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -149,6 +150,22 @@ export default function TemplateDetail() {
     }
   }
 
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${template?.data.name}"? This will also remove all its column definitions and cannot be undone.`)) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/val-templates/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+        throw new Error(body.error)
+      }
+      navigate('/')
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : String(e))
+      setDeleting(false)
+    }
+  }
+
   const dirtyCount = columns.filter(c => c.dirty).length
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +214,13 @@ export default function TemplateDetail() {
               <span className="text-xs text-success font-medium">Changes saved</span>
             )}
             <button
+              onClick={handleDelete}
+              disabled={deleting || phase === 'saving'}
+              className="rounded-md border border-danger/40 px-4 py-2 text-sm font-medium text-danger hover:bg-danger/5 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-danger/40"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+            <button
               onClick={handleSave}
               disabled={dirtyCount === 0 || phase === 'saving'}
               className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-light disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-primary/40"
@@ -236,7 +260,13 @@ export default function TemplateDetail() {
           {template.data.source_file && (
             <div className="col-span-2 sm:col-span-4">
               <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Source file</p>
-              <p className="font-mono text-xs text-text">{template.data.source_file}</p>
+              <a
+                href={`/api/val-templates/${template.document_id}/download`}
+                download
+                className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+              >
+                ↓ Download source spreadsheet
+              </a>
             </div>
           )}
         </div>

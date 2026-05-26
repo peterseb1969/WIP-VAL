@@ -177,6 +177,42 @@ export async function getTermValues(terminologyId: string): Promise<Set<string>>
   return new Set(data.items.map(t => t.value))
 }
 
+// Soft-delete a single document.
+export async function deleteDocument(documentId: string): Promise<void> {
+  const res = await fetch(`${WIP_BASE}/api/document-store/documents/${documentId}`, {
+    method: 'DELETE',
+    headers: { 'X-API-Key': apiKey() },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`WIP DELETE document ${documentId} → ${res.status}: ${text.slice(0, 300)}`)
+  }
+}
+
+// Download a file from WIP's file store. Returns raw bytes and headers.
+export async function downloadFile(
+  fileId: string
+): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
+  // Try /download suffix first; WIP may also serve at the bare resource path.
+  for (const path of [
+    `/api/document-store/files/${fileId}/download`,
+    `/api/document-store/files/${fileId}`,
+  ]) {
+    const res = await fetch(`${WIP_BASE}${path}`, {
+      headers: { 'X-API-Key': apiKey() },
+    })
+    if (!res.ok) continue
+    const ct = res.headers.get('Content-Type') ?? ''
+    if (ct.includes('application/json')) continue  // metadata endpoint, not binary
+    const disposition = res.headers.get('Content-Disposition') ?? ''
+    const match = /filename[^;=\n]*=['"]?([^'"\n;]+)['"]?/.exec(disposition)
+    const filename = match?.[1]?.trim() ?? fileId
+    const buffer = Buffer.from(await res.arrayBuffer())
+    return { buffer, contentType: ct || 'application/octet-stream', filename }
+  }
+  throw new Error(`Could not download file ${fileId} from WIP`)
+}
+
 // Patch fields on a single document (RFC 7396 merge patch).
 export async function patchDocument(
   documentId: string,
