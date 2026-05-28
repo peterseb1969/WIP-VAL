@@ -2,30 +2,33 @@ import multer from 'multer'
 import * as XLSX from 'xlsx'
 import type { Request, Response, RequestHandler } from 'express'
 import {
-  getDocument,
   queryDocuments,
   getTemplateIdByValue,
   getTermValues,
+  getValTemplateDoc,
+  getWipTemplate,
+  uploadFileToWip,
+  createDocument,
   WIP_NAMESPACE,
 } from './wip-api.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface ColumnSpec {
+export interface ColumnSpec {
   column_name: string
   column_type: string
   required: boolean
   lov_terminology?: string
 }
 
-interface ValidationError {
+export interface ValidationError {
   row: number
   column: string
   value: string
   message: string
 }
 
-interface FileResult {
+export interface FileResult {
   filename: string
   rowCount: number
   errorCount: number
@@ -33,10 +36,17 @@ interface FileResult {
   errors: ValidationError[]
 }
 
+interface RunRef {
+  document_id: string
+  filename: string
+}
+
 interface ValidationResponse {
   templateName: string
   totalErrors: number
   results: FileResult[]
+  runs?: RunRef[]
+  persistenceError?: string
 }
 
 // ─── Type validators ──────────────────────────────────────────────────────────
@@ -71,7 +81,7 @@ function validateValue(raw: string, colType: string, lovSet?: Set<string>): stri
 
 // ─── Validate a single spreadsheet buffer ────────────────────────────────────
 
-function validateSheet(
+export function validateSheet(
   buffer: Buffer,
   filename: string,
   columns: ColumnSpec[],
@@ -176,57 +186,109 @@ export function createValidateHandler(): RequestHandler[] {
     }
 
     try {
-      // 1. Load template document and VAL_COLUMN template ID in parallel
-      const [templateDoc, colTemplateId] = await Promise.all([
-        getDocument(templateId),
-        getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN'),
-      ])
-
-      // 2. Load all columns for this template
-      const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
-        filters: [{ field: 'data.template', operator: 'eq', value: templateId }],
-        pageSize: 100,
-      })
-
-      const columns: ColumnSpec[] = colsResult.items
-        .sort((a, b) => {
-          const aIdx = ((a as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
-          const bIdx = ((b as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
-          return aIdx - bIdx
-        })
-        .map(item => {
-          const d = (item as Record<string, unknown>)['data'] as Record<string, unknown>
-          return {
-            column_name: d['column_name'] as string,
-            column_type: d['column_type'] as string,
-            required: (d['required'] as boolean) ?? false,
-            lov_terminology: d['lov_terminology'] as string | undefined,
-          }
-        })
-
-      // 3. Load LOV term sets in parallel (only for term-typed columns)
+      // Load VAL_TEMPLATE doc to check if it has a linked WIP template
+      const valTemplate = await getValTemplateDoc(templateId)
+      let columns: ColumnSpec[]
       const lovSets = new Map<string, Set<string>>()
-      await Promise.all(
-        columns
-          .filter(c => c.column_type === 'term' && c.lov_terminology)
-          .map(async c => {
-            const values = await getTermValues(c.lov_terminology!)
-            lovSets.set(c.column_name, values)
-          })
-      )
 
-      // 4. Validate each uploaded file
-      const templateData = (templateDoc as Record<string, unknown>)['data'] as Record<string, unknown>
+      if (valTemplate.data.wip_template_id) {
+        // New path: derive ColumnSpec[] from WIP template fields
+        const wipTemplate = await getWipTemplate(valTemplate.data.wip_template_id)
+        columns = wipTemplate.fields.map(f => ({
+          column_name: f.label,
+          column_type: f.semantic_type || f.type,
+          required: f.mandatory,
+          lov_terminology: f.terminology_ref,
+        }))
+
+        // Load LOV values for term fields
+        await Promise.all(
+          columns
+            .filter(c => c.column_type === 'term' && c.lov_terminology)
+            .map(async c => {
+              const values = await getTermValues(c.lov_terminology!)
+              lovSets.set(c.column_name, values)
+            })
+        )
+      } else {
+        // Legacy path: load from VAL_COLUMN documents
+        const colTemplateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN')
+        const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
+          filters: [{ field: 'data.template', operator: 'eq', value: templateId }],
+          pageSize: 100,
+        })
+
+        columns = colsResult.items
+          .sort((a, b) => {
+            const aIdx = ((a as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
+            const bIdx = ((b as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
+            return aIdx - bIdx
+          })
+          .map(item => {
+            const d = (item as Record<string, unknown>)['data'] as Record<string, unknown>
+            return {
+              column_name: d['column_name'] as string,
+              column_type: d['column_type'] as string,
+              required: (d['required'] as boolean) ?? false,
+              lov_terminology: d['lov_terminology'] as string | undefined,
+            }
+          })
+
+        await Promise.all(
+          columns
+            .filter(c => c.column_type === 'term' && c.lov_terminology)
+            .map(async c => {
+              const values = await getTermValues(c.lov_terminology!)
+              lovSets.set(c.column_name, values)
+            })
+        )
+      }
+
+      // Validate each uploaded file
       const results = files.map(f =>
         validateSheet(f.buffer, f.originalname, columns, lovSets)
       )
 
       const totalErrors = results.reduce((sum, r) => sum + r.errorCount, 0)
 
+      // Persist each file as a VAL_RUN document (best-effort)
+      let runs: RunRef[] | undefined
+      let persistenceError: string | undefined
+      try {
+        const valRunTemplateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_RUN')
+        runs = await Promise.all(
+          files.map(async (f, i) => {
+            const result = results[i]!
+            const { file_id } = await uploadFileToWip(
+              f.buffer, f.originalname,
+              f.mimetype || 'application/octet-stream',
+              WIP_NAMESPACE,
+            )
+            const doc = await createDocument(valRunTemplateId, WIP_NAMESPACE, {
+              source_file: file_id,
+              source_filename: f.originalname,
+              template: templateId,
+              run_status: 'complete',
+              row_count: result.rowCount,
+              error_count: result.errorCount,
+              warning_count: 0,
+              run_at: new Date().toISOString(),
+              run_by: 'wip-val',
+            })
+            return { document_id: doc.document_id, filename: f.originalname }
+          })
+        )
+      } catch (err: unknown) {
+        persistenceError = err instanceof Error ? err.message : 'Failed to persist validation runs'
+        console.error('Persistence error:', persistenceError)
+      }
+
       const response: ValidationResponse = {
-        templateName: (templateData['name'] as string) ?? 'Unknown',
+        templateName: valTemplate.data.name,
         totalErrors,
         results,
+        runs,
+        persistenceError,
       }
 
       res.json(response)

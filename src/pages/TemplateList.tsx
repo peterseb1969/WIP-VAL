@@ -6,8 +6,10 @@ import { Link, useNavigate } from 'react-router-dom'
 interface TemplateData {
   name: string
   description?: string
-  column_count?: number
+  field_count?: number
   created_by?: string
+  format?: string | null
+  wip_template_value?: string | null
 }
 
 interface TemplateDoc {
@@ -144,14 +146,25 @@ export default function TemplateList() {
                 className="flex items-center justify-between rounded-md border border-gray-200 bg-surface p-4 hover:bg-background hover:border-primary/40 transition-colors"
               >
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="text-sm font-medium text-text truncate">{doc.data.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-text truncate">{doc.data.name}</span>
+                    {doc.data.format && (
+                      <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                        doc.data.format === 'vendor'
+                          ? 'bg-purple-100 text-purple-700'
+                          : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {doc.data.format}
+                      </span>
+                    )}
+                  </div>
                   {doc.data.description && (
                     <span className="text-xs text-text-muted truncate">{doc.data.description}</span>
                   )}
                 </div>
                 <div className="flex items-center gap-6 shrink-0 ml-4 text-xs text-text-muted">
-                  {doc.data.column_count != null && (
-                    <span>{doc.data.column_count} col{doc.data.column_count !== 1 ? 's' : ''}</span>
+                  {doc.data.field_count != null && (
+                    <span>{doc.data.field_count} field{doc.data.field_count !== 1 ? 's' : ''}</span>
                   )}
                   <span>{new Date(doc.created_at).toLocaleDateString()}</span>
                   <span className="text-primary">→</span>

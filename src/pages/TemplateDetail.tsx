@@ -1,16 +1,19 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ColumnType = 'string' | 'number' | 'integer' | 'boolean' | 'date' | 'datetime' | 'email' | 'url' | 'term'
+type FieldType = 'string' | 'number' | 'integer' | 'boolean' | 'date' | 'datetime' | 'email' | 'url' | 'term'
 
 interface TemplateData {
   name: string
   description?: string
-  column_count?: number
+  field_count?: number
   created_by?: string
   source_file?: string
+  wip_template_id?: string | null
+  wip_template_value?: string | null
+  format?: string | null
 }
 
 interface TemplateDoc {
@@ -20,11 +23,22 @@ interface TemplateDoc {
   version: number
 }
 
-interface ColumnData {
+interface WipField {
+  name: string
+  label: string
+  type: string
+  mandatory: boolean
+  terminology_ref?: string
+  semantic_type?: string
+  validation?: { pattern?: string; minimum?: number; maximum?: number }
+  metadata?: Record<string, unknown>
+}
+
+interface LegacyColumnData {
   column_name: string
   display_name?: string
   column_index: number
-  column_type: ColumnType
+  column_type: FieldType
   required?: boolean
   description?: string
   pattern?: string
@@ -33,30 +47,43 @@ interface ColumnData {
   lov_terminology?: string
 }
 
-interface ColumnDoc {
+interface LegacyColumnDoc {
   document_id: string
-  data: ColumnData
+  data: LegacyColumnData
 }
 
-interface DetailResponse {
+interface DetailResponseNew {
   template: TemplateDoc
-  columns: ColumnDoc[]
+  fields: WipField[]
+  identityFields: string[]
+  wipTemplateVersion: number
 }
 
-// ─── Editable column state ────────────────────────────────────────────────────
+interface DetailResponseLegacy {
+  template: TemplateDoc
+  columns: LegacyColumnDoc[]
+}
 
-interface EditableColumn {
-  document_id: string
-  columnName: string
-  displayName: string
-  columnType: ColumnType
-  required: boolean
-  isLov: boolean        // term type — not editable in this version
+type DetailResponse = DetailResponseNew | DetailResponseLegacy
+
+function isNewResponse(r: DetailResponse): r is DetailResponseNew {
+  return 'fields' in r
+}
+
+// ─── Editable field state ────────────────────────────────────────────────────
+
+interface EditableField {
+  name: string
+  label: string
+  type: FieldType
+  mandatory: boolean
+  isLov: boolean
+  isIdentity: boolean
+  metadata?: Record<string, unknown>
   dirty: boolean
 }
 
-// Non-LOV types available for editing
-const NON_LOV_TYPES: { value: ColumnType; label: string }[] = [
+const NON_LOV_TYPES: { value: FieldType; label: string }[] = [
   { value: 'string',   label: 'String' },
   { value: 'number',   label: 'Number' },
   { value: 'integer',  label: 'Integer' },
@@ -67,14 +94,28 @@ const NON_LOV_TYPES: { value: ColumnType; label: string }[] = [
   { value: 'url',      label: 'URL' },
 ]
 
-function toEditable(col: ColumnDoc): EditableColumn {
+function wipFieldToEditable(field: WipField, identityFields: string[]): EditableField {
+  const effectiveType = (field.semantic_type || field.type) as FieldType
   return {
-    document_id: col.document_id,
-    columnName: col.data.column_name,
-    displayName: col.data.display_name ?? col.data.column_name,
-    columnType: col.data.column_type,
-    required: col.data.required ?? false,
+    name: field.name,
+    label: field.label,
+    type: effectiveType,
+    mandatory: field.mandatory,
+    isLov: field.type === 'term',
+    isIdentity: identityFields.includes(field.name),
+    metadata: field.metadata as Record<string, unknown> | undefined,
+    dirty: false,
+  }
+}
+
+function legacyColumnToEditable(col: LegacyColumnDoc): EditableField {
+  return {
+    name: col.document_id,
+    label: col.data.display_name ?? col.data.column_name,
+    type: col.data.column_type,
+    mandatory: col.data.required ?? false,
     isLov: col.data.column_type === 'term',
+    isIdentity: false,
     dirty: false,
   }
 }
@@ -91,9 +132,12 @@ export default function TemplateDetail() {
   const [error, setError] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [template, setTemplate] = useState<TemplateDoc | null>(null)
-  const [columns, setColumns] = useState<EditableColumn[]>([])
+  const [fields, setFields] = useState<EditableField[]>([])
+  const [isNewPath, setIsNewPath] = useState(false)
+  const [wipVersion, setWipVersion] = useState<number | null>(null)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [expandedField, setExpandedField] = useState<string | null>(null)
 
   useEffect(() => {
     if (!id) return
@@ -101,7 +145,14 @@ export default function TemplateDetail() {
       .then(r => r.ok ? r.json() : r.json().then((b: { error: string }) => Promise.reject(b.error)))
       .then((data: DetailResponse) => {
         setTemplate(data.template)
-        setColumns(data.columns.map(toEditable))
+        if (isNewResponse(data)) {
+          setFields(data.fields.map(f => wipFieldToEditable(f, data.identityFields)))
+          setIsNewPath(true)
+          setWipVersion(data.wipTemplateVersion)
+        } else {
+          setFields(data.columns.map(legacyColumnToEditable))
+          setIsNewPath(false)
+        }
         setPhase('ready')
       })
       .catch((e: unknown) => {
@@ -110,38 +161,55 @@ export default function TemplateDetail() {
       })
   }, [id])
 
-  function updateColumn(docId: string, key: 'displayName' | 'columnType', value: string) {
-    setColumns(prev => prev.map(c =>
-      c.document_id === docId ? { ...c, [key]: value, dirty: true } : c
+  function updateField(name: string, key: 'label' | 'type', value: string) {
+    setFields(prev => prev.map(f =>
+      f.name === name ? { ...f, [key]: value, dirty: true } : f
     ))
     setSaveSuccess(false)
   }
 
   async function handleSave() {
-    const dirty = columns.filter(c => c.dirty)
+    const dirty = fields.filter(f => f.dirty)
     if (dirty.length === 0) return
 
     setSaveError(null)
     setSaveSuccess(false)
     setPhase('saving')
 
-    const patches = dirty.map(c => ({
-      document_id: c.document_id,
-      column_type: c.columnType,
-      display_name: c.displayName,
-    }))
-
     try {
-      const res = await fetch(`/api/val-templates/${id}/columns`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patches),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
-        throw new Error(body.error)
+      if (isNewPath) {
+        const patches = dirty.map(f => ({
+          name: f.name,
+          type: f.type,
+          label: f.label,
+          mandatory: f.mandatory,
+        }))
+        const res = await fetch(`/api/val-templates/${id}/fields`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patches),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+          throw new Error(body.error)
+        }
+      } else {
+        const patches = dirty.map(f => ({
+          document_id: f.name,
+          column_type: f.type,
+          display_name: f.label,
+        }))
+        const res = await fetch(`/api/val-templates/${id}/columns`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patches),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+          throw new Error(body.error)
+        }
       }
-      setColumns(prev => prev.map(c => ({ ...c, dirty: false })))
+      setFields(prev => prev.map(f => ({ ...f, dirty: false })))
       setSaveSuccess(true)
       setPhase('ready')
     } catch (e: unknown) {
@@ -151,7 +219,7 @@ export default function TemplateDetail() {
   }
 
   async function handleDelete() {
-    if (!window.confirm(`Delete "${template?.data.name}"? This will also remove all its column definitions and cannot be undone.`)) return
+    if (!window.confirm(`Delete "${template?.data.name}"? This cannot be undone.`)) return
     setDeleting(true)
     try {
       const res = await fetch(`/api/val-templates/${id}`, { method: 'DELETE' })
@@ -166,7 +234,7 @@ export default function TemplateDetail() {
     }
   }
 
-  const dirtyCount = columns.filter(c => c.dirty).length
+  const dirtyCount = fields.filter(f => f.dirty).length
 
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -204,7 +272,18 @@ export default function TemplateDetail() {
             >
               ← All Templates
             </button>
-            <h1 className="text-2xl font-semibold tracking-tight text-text">{template.data.name}</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight text-text">{template.data.name}</h1>
+              {template.data.format && (
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${
+                  template.data.format === 'vendor'
+                    ? 'bg-purple-100 text-purple-700'
+                    : 'bg-blue-100 text-blue-700'
+                }`}>
+                  {template.data.format}
+                </span>
+              )}
+            </div>
             {template.data.description && (
               <p className="mt-1 text-sm text-text-muted">{template.data.description}</p>
             )}
@@ -240,8 +319,8 @@ export default function TemplateDetail() {
         {/* Metadata card */}
         <div className="mb-6 rounded-lg border border-gray-200 bg-surface p-4 shadow-sm grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
           <div>
-            <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Columns</p>
-            <p className="text-text">{template.data.column_count ?? columns.length}</p>
+            <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Fields</p>
+            <p className="text-text">{template.data.field_count ?? fields.length}</p>
           </div>
           <div>
             <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Created</p>
@@ -251,6 +330,18 @@ export default function TemplateDetail() {
             <div>
               <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Created by</p>
               <p className="text-text truncate">{template.data.created_by}</p>
+            </div>
+          )}
+          {template.data.wip_template_value && (
+            <div>
+              <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">WIP Template</p>
+              <p className="font-mono text-xs text-text truncate">{template.data.wip_template_value}</p>
+            </div>
+          )}
+          {wipVersion != null && (
+            <div>
+              <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Version</p>
+              <p className="text-text">v{wipVersion}</p>
             </div>
           )}
           <div>
@@ -271,65 +362,106 @@ export default function TemplateDetail() {
           )}
         </div>
 
-        {/* Columns table */}
+        {/* Fields table */}
         <div className="rounded-lg border border-gray-200 bg-surface overflow-hidden shadow-sm">
           <div className="border-b border-gray-200 px-4 py-3 flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-text">Columns</h2>
-            <span className="text-xs text-text-muted">— type and display name are editable; LOV columns are locked until a future release</span>
+            <h2 className="text-sm font-semibold text-text">Fields</h2>
+            <span className="text-xs text-text-muted">— type and label are editable; LOV fields are locked</span>
           </div>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-xs text-text-muted uppercase tracking-wide">
                 <th className="px-3 py-2 text-left w-10">#</th>
-                <th className="px-3 py-2 text-left">Column Name</th>
-                <th className="px-3 py-2 text-left">Display Name</th>
+                <th className="px-3 py-2 text-left">Name</th>
+                <th className="px-3 py-2 text-left">Label</th>
                 <th className="px-3 py-2 text-left w-44">Type</th>
                 <th className="px-3 py-2 text-center w-16">Req</th>
+                {isNewPath && <th className="px-3 py-2 text-center w-10"></th>}
               </tr>
             </thead>
             <tbody>
-              {columns.map((col, i) => (
-                <tr
-                  key={col.document_id ?? i}
-                  className={`border-b border-gray-100 last:border-0 hover:bg-gray-50 border-l-4 ${
-                    col.dirty ? 'border-l-accent bg-orange-50/30' : 'border-l-transparent'
-                  }`}
-                >
-                  <td className="px-3 py-2 text-text-muted tabular-nums">{i + 1}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-text">{col.columnName}</td>
-                  <td className="px-3 py-2">
-                    <input
-                      type="text"
-                      value={col.displayName}
-                      onChange={e => updateColumn(col.document_id, 'displayName', e.target.value)}
-                      className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-                    />
-                  </td>
-                  <td className="px-3 py-2">
-                    {col.isLov ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                        Controlled (LOV)
-                      </span>
-                    ) : (
-                      <select
-                        value={col.columnType}
-                        onChange={e => updateColumn(col.document_id, 'columnType', e.target.value)}
-                        className="w-full border border-gray-200 rounded px-2 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/40"
-                      >
-                        {NON_LOV_TYPES.map(t => (
-                          <option key={t.value} value={t.value}>{t.label}</option>
-                        ))}
-                      </select>
+              {fields.map((field, i) => (
+                <Fragment key={field.name}>
+                  <tr
+                    className={`border-b border-gray-100 last:border-0 hover:bg-gray-50 border-l-4 ${
+                      field.dirty ? 'border-l-accent bg-orange-50/30' : 'border-l-transparent'
+                    }`}
+                  >
+                    <td className="px-3 py-2 text-text-muted tabular-nums">{i + 1}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs text-text">{field.name}</span>
+                        {field.isIdentity && (
+                          <span title="Identity field">
+                            <svg className="inline w-3.5 h-3.5 text-amber-600" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="text"
+                        value={field.label}
+                        onChange={e => updateField(field.name, 'label', e.target.value)}
+                        className="w-full border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      {field.isLov ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                          Controlled (LOV)
+                        </span>
+                      ) : (
+                        <select
+                          value={field.type}
+                          onChange={e => updateField(field.name, 'type', e.target.value)}
+                          className="w-full border border-gray-200 rounded px-2 py-1 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary/40"
+                        >
+                          {NON_LOV_TYPES.map(t => (
+                            <option key={t.value} value={t.value}>{t.label}</option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      {field.mandatory ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">Yes</span>
+                      ) : (
+                        <span className="text-xs text-text-muted">—</span>
+                      )}
+                    </td>
+                    {isNewPath && (
+                      <td className="px-3 py-2 text-center">
+                        {field.metadata && Object.keys(field.metadata).length > 0 && (
+                          <button
+                            onClick={() => setExpandedField(expandedField === field.name ? null : field.name)}
+                            className="text-xs text-text-muted hover:text-text"
+                            title="Show metadata"
+                          >
+                            {expandedField === field.name ? '▾' : '▸'}
+                          </button>
+                        )}
+                      </td>
                     )}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    {col.required ? (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">Yes</span>
-                    ) : (
-                      <span className="text-xs text-text-muted">—</span>
-                    )}
-                  </td>
-                </tr>
+                  </tr>
+                  {expandedField === field.name && field.metadata && (
+                    <tr className="bg-gray-50/50">
+                      <td></td>
+                      <td colSpan={isNewPath ? 5 : 4} className="px-3 py-2">
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                          {Object.entries(field.metadata).map(([k, v]) => (
+                            v != null && v !== '' && (
+                              <div key={k} className="flex gap-2">
+                                <span className="text-text-muted font-medium min-w-[100px]">{k.replace(/_/g, ' ')}</span>
+                                <span className="text-text truncate">{String(v)}</span>
+                              </div>
+                            )
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

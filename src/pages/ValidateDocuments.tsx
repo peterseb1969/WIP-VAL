@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,10 +23,17 @@ interface FileResult {
   errors: ValidationError[]
 }
 
+interface RunRef {
+  document_id: string
+  filename: string
+}
+
 interface ValidationResponse {
   templateName: string
   totalErrors: number
   results: FileResult[]
+  runs?: RunRef[]
+  persistenceError?: string
 }
 
 type Phase = 'idle' | 'validating' | 'results'
@@ -248,6 +256,23 @@ export default function ValidateDocuments() {
         {/* Results */}
         {phase === 'results' && results && (
           <div className="space-y-4">
+
+            {/* Persistence link */}
+            {results.runs && results.runs.length > 0 && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 flex items-center justify-between">
+                <p className="text-sm text-text">
+                  {results.runs.length} validation run{results.runs.length !== 1 ? 's' : ''} saved
+                </p>
+                <Link to="/runs" className="text-sm font-medium text-primary hover:underline">
+                  View all runs →
+                </Link>
+              </div>
+            )}
+            {results.persistenceError && (
+              <div className="rounded-lg border border-accent/20 bg-accent/5 p-3">
+                <p className="text-xs text-accent">Runs could not be saved: {results.persistenceError}</p>
+              </div>
+            )}
 
             {/* Summary banner */}
             {results.totalErrors === 0 ? (

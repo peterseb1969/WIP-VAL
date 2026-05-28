@@ -13,6 +13,11 @@ const NAV_ITEMS = [
     label: 'Validate Documents',
     isActive: (p: string) => p === '/validate',
   },
+  {
+    path: '/runs',
+    label: 'Validation Runs',
+    isActive: (p: string) => p === '/runs',
+  },
 ]
 
 function useBreadcrumb(): string {

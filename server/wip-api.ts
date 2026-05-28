@@ -101,6 +101,26 @@ export async function uploadFileToWip(
   // octet-stream which is always accepted, and allow it on the template field.
   const blob = new Blob([new Uint8Array(buffer)], { type: 'application/octet-stream' })
   const file = await wip().files.uploadFile(blob, filename, { category: 'source_spreadsheet' }, namespace)
+
+  // WIP deduplicates by checksum — if the file was previously soft-deleted,
+  // the returned file_id is inactive and can't be referenced. Hard-delete it
+  // so the next upload creates a fresh file.
+  const meta = await wip().files.getFile(file.file_id)
+  if (meta.status === 'inactive') {
+    try {
+      const baseUrl = process.env.WIP_BASE_URL || 'https://localhost:8443'
+      const apiKey = process.env.WIP_API_KEY || ''
+      await fetch(`${baseUrl}/api/files/${namespace}/${file.file_id}?hard=true`, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': apiKey },
+      })
+    } catch { /* best-effort */ }
+    // Re-upload — now that the old file is gone, WIP will create a new one
+    const blob2 = new Blob([new Uint8Array(buffer)], { type: 'application/octet-stream' })
+    const file2 = await wip().files.uploadFile(blob2, filename, { category: 'source_spreadsheet' }, namespace)
+    return { file_id: file2.file_id }
+  }
+
   return { file_id: file.file_id }
 }
 
@@ -140,9 +160,12 @@ interface ValTemplateRow {
   data: {
     name: string
     description: string
-    column_count: number | null
+    field_count: number | null
     created_by: string | null
     source_file: string | null
+    wip_template_id: string | null
+    wip_template_value: string | null
+    format: string | null
   }
 }
 
@@ -155,16 +178,23 @@ function rowToValTemplate(row: unknown): ValTemplateRow {
     data: {
       name: r['name'] as string,
       description: (r['description'] as string | null) ?? '',
-      column_count: r['column_count'] as number | null,
+      field_count: (r['field_count'] as number | null) ?? (r['column_count'] as number | null),
       created_by: r['created_by'] as string | null,
       source_file: r['source_file_file_id'] as string | null,
+      wip_template_id: r['wip_template_id'] as string | null,
+      wip_template_value: r['wip_template_value'] as string | null,
+      format: r['format'] as string | null,
     },
   }
 }
 
 const VAL_TEMPLATE_COLS = `
-  document_id, name, description, column_count, data_created_by AS created_by,
-  source_file_file_id, created_at, version`
+  document_id, name, description,
+  COALESCE(field_count, column_count) AS field_count,
+  column_count,
+  data_created_by AS created_by,
+  source_file_file_id, created_at, version,
+  wip_template_id, wip_template_value, format`
 
 export async function queryValTemplates(
   search: string,
@@ -202,6 +232,38 @@ export async function getValTemplateDoc(id: string): Promise<ValTemplateRow> {
   )
   if (result.rows.length === 0) throw new Error(`404: Template '${id}' not found`)
   return rowToValTemplate(result.rows[0])
+}
+
+export interface WipTemplateField {
+  name: string
+  label: string
+  type: string
+  mandatory: boolean
+  terminology_ref?: string
+  semantic_type?: string
+  validation?: { pattern?: string; minimum?: number; maximum?: number }
+  metadata?: Record<string, unknown>
+}
+
+export async function getWipTemplate(templateId: string): Promise<{
+  template_id: string
+  value: string
+  version: number
+  fields: WipTemplateField[]
+  identity_fields: string[]
+  metadata?: Record<string, unknown>
+}> {
+  const list = await wip().templates.listTemplates({ namespace: WIP_NAMESPACE, page_size: 200 })
+  const match = list.items.find(t => t.template_id === templateId)
+  if (!match) throw new Error(`WIP template '${templateId}' not found`)
+  return {
+    template_id: match.template_id,
+    value: match.value,
+    version: match.version,
+    fields: (match.fields as unknown as WipTemplateField[]) ?? [],
+    identity_fields: match.identity_fields ?? [],
+    metadata: match.metadata as unknown as Record<string, unknown> | undefined,
+  }
 }
 
 interface ColumnRow {

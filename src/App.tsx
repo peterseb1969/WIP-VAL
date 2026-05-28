@@ -4,6 +4,7 @@ import TemplateList from './pages/TemplateList'
 import TemplateParser from './pages/TemplateParser'
 import TemplateDetail from './pages/TemplateDetail'
 import ValidateDocuments from './pages/ValidateDocuments'
+import ValidationRuns from './pages/ValidationRuns'
 import AskBar from './components/AskBar'
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/parse-template" element={<TemplateParser />} />
           <Route path="/templates/:id" element={<TemplateDetail />} />
           <Route path="/validate" element={<ValidateDocuments />} />
+          <Route path="/runs" element={<ValidationRuns />} />
         </Route>
       </Routes>
       <AskBar />

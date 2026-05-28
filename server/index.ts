@@ -5,14 +5,23 @@ import session from 'express-session'
 import { initAgent, ask } from './agent.js'
 import { initAuth, requireAuth, handleCallback, handleLogout } from './auth.js'
 import { createUploadHandler, createSaveHandler } from './parse-template.js'
+import { createSaveTemplateHandler } from './save-template.js'
 import {
   listValTemplatesHandler,
   getValTemplateHandler,
   patchValTemplateColumnsHandler,
+  patchValTemplateFieldsHandler,
   deleteValTemplateHandler,
   downloadTemplateFileHandler,
 } from './val-templates.js'
 import { createValidateHandler } from './validate.js'
+import {
+  listValRunsHandler,
+  getValRunHandler,
+  downloadRunFileHandler,
+  deleteValRunHandler,
+  revalidateRunsHandler,
+} from './val-runs.js'
 
 const PORT = parseInt(process.env.PORT || '3001')
 const app = express()
@@ -71,17 +80,26 @@ app.get('/api/me', (req, res) => {
 
 // --- Template parser ---
 app.post('/api/template-parser/upload', ...createUploadHandler())
-app.post('/api/template-parser/save', createSaveHandler())
+app.post('/api/template-parser/save-legacy', createSaveHandler())
+app.post('/api/template-parser/save', createSaveTemplateHandler())
 
 // --- Validation templates ---
 app.get('/api/val-templates', listValTemplatesHandler())
 app.get('/api/val-templates/:id', getValTemplateHandler())
 app.get('/api/val-templates/:id/download', downloadTemplateFileHandler())
 app.patch('/api/val-templates/:id/columns', patchValTemplateColumnsHandler())
+app.patch('/api/val-templates/:id/fields', patchValTemplateFieldsHandler())
 app.delete('/api/val-templates/:id', deleteValTemplateHandler())
 
 // --- Document validation ---
 app.post('/api/validate', ...createValidateHandler())
+
+// --- Validation runs ---
+app.get('/api/val-runs', listValRunsHandler())
+app.post('/api/val-runs/revalidate', revalidateRunsHandler())
+app.get('/api/val-runs/:id', getValRunHandler())
+app.get('/api/val-runs/:id/download', downloadRunFileHandler())
+app.delete('/api/val-runs/:id', deleteValRunHandler())
 
 // --- Start ---
 async function main() {

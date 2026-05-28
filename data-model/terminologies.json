@@ -52,5 +52,15 @@
       { "value": "complete", "label": "Complete", "description": "Validation finished successfully.",          "sort_order": 3 },
       { "value": "failed",   "label": "Failed",   "description": "Validation aborted due to a system error.", "sort_order": 4 }
     ]
+  },
+  {
+    "value": "VAL_FORMAT_TYPE",
+    "label": "Spreadsheet Format",
+    "description": "Source spreadsheet format type for validation templates.",
+    "namespace": "wip-val",
+    "terms": [
+      { "value": "c02",    "label": "C02",    "description": "C02 format: row 1 = headers, rows 2+ = data, optional Validation Sheet tab for LOV.",    "sort_order": 1 },
+      { "value": "vendor", "label": "Vendor", "description": "Vendor format: rows 1-11 = field metadata, columns B+ = fields, LoV tab, meta sheets.", "sort_order": 2 }
+    ]
   }
 ]

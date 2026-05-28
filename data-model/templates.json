@@ -2,12 +2,12 @@
   {
     "value": "VAL_TEMPLATE",
     "label": "Validation Template",
-    "description": "A validation template defining the expected schema for an incoming data spreadsheet.",
+    "description": "A validation template defining the expected schema for an incoming data spreadsheet. Links to a WIP-native template for validation.",
     "namespace": "wip-val",
     "identity_fields": ["name"],
     "fields": [
-      { "name": "name",         "label": "Template Name",      "type": "string",  "mandatory": true  },
-      { "name": "description",  "label": "Description",        "type": "string"                       },
+      { "name": "name",               "label": "Template Name",      "type": "string",  "mandatory": true },
+      { "name": "description",        "label": "Description",        "type": "string"                      },
       {
         "name": "source_file",
         "label": "Source Spreadsheet",
@@ -16,12 +16,16 @@
           "allowed_types": [
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
-            "text/csv"
+            "text/csv",
+            "application/octet-stream"
           ]
         }
       },
-      { "name": "column_count", "label": "Column Count",       "type": "integer" },
-      { "name": "created_by",   "label": "Created By",         "type": "string"  }
+      { "name": "wip_template_id",    "label": "WIP Template ID",    "type": "string",  "mandatory": true },
+      { "name": "wip_template_value", "label": "WIP Template Value", "type": "string"                      },
+      { "name": "format",             "label": "Spreadsheet Format", "type": "term",    "terminology_ref": "VAL_FORMAT_TYPE" },
+      { "name": "field_count",        "label": "Field Count",        "type": "integer"                      },
+      { "name": "created_by",         "label": "Created By",         "type": "string"                      }
     ]
   },
   {
@@ -90,10 +94,12 @@
           "allowed_types": [
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.ms-excel",
-            "text/csv"
+            "text/csv",
+            "application/octet-stream"
           ]
         }
       },
+      { "name": "source_filename", "label": "Source Filename", "type": "string" },
       {
         "name": "template",
         "label": "Validation Template",
