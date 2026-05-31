@@ -223,8 +223,7 @@ function rowToValTemplate(row: unknown): ValTemplateRow {
 
 const VAL_TEMPLATE_COLS = `
   document_id, name, description,
-  COALESCE(field_count, column_count) AS field_count,
-  column_count,
+  field_count,
   data_created_by AS created_by,
   source_file_file_id, created_at, version,
   wip_template_id, wip_template_value, format`
