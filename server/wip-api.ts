@@ -48,6 +48,39 @@ export async function createDocument(
   return { document_id: r.id, status: r.status }
 }
 
+export interface WipValidationError {
+  field: string | null
+  code: string
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface WipValidationResult {
+  valid: boolean
+  errors: WipValidationError[]
+  warnings: string[]
+}
+
+// Dry-run validation against a WIP template — no document is persisted.
+// Singular today (one call per row); the call site in validate.ts isolates it
+// so the swap to a future bulk validateDocuments (CASE-419) is one place.
+export async function validateWipDocument(
+  templateId: string,
+  namespace: string,
+  data: Record<string, unknown>
+): Promise<WipValidationResult> {
+  const r = await wip().documents.validateDocument({
+    template_id: templateId,
+    namespace,
+    data,
+  })
+  return {
+    valid: r.valid,
+    errors: (r.errors ?? []) as WipValidationError[],
+    warnings: r.warnings ?? [],
+  }
+}
+
 interface TerminologyResult {
   terminology_id: string
   value: string

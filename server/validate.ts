@@ -9,8 +9,10 @@ import {
   getWipTemplate,
   uploadFileToWip,
   createDocument,
+  validateWipDocument,
   WIP_NAMESPACE,
 } from './wip-api.js'
+import type { WipTemplateField } from './wip-api.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +79,31 @@ function validateValue(raw: string, colType: string, lovSet?: Set<string>): stri
     default:
       return null  // string: any value is valid
   }
+}
+
+// ─── WIP-delegated validation (new path) ─────────────────────────────────────
+// Coerce a spreadsheet cell to its field's JS type ONLY when cleanly
+// convertible; otherwise pass the raw value through so WIP rejects it. The
+// coercion never hides an error — "12x" in an integer column reaches WIP as a
+// string and fails there, which is the point: WIP semantics are the truth.
+function coerce(cell: unknown, type: string): unknown {
+  if (cell instanceof Date) {
+    return type === 'date' ? cell.toISOString().slice(0, 10) : cell.toISOString()
+  }
+  const v = String(cell).trim()
+  switch (type) {
+    case 'integer': return /^-?\d+$/.test(v) ? Number(v) : v
+    case 'number':  return v !== '' && isFinite(Number(v)) ? Number(v) : v
+    case 'boolean':
+      return /^(true|yes|1)$/i.test(v) ? true : /^(false|no|0)$/i.test(v) ? false : v
+    default:        return v   // string / term / email / url — WIP validates
+  }
+}
+
+// The single seam. One validateDocument call per row today; when the platform
+// ships bulk validateDocuments (CASE-419) this is the only place that changes.
+async function validateRow(wipTemplateId: string, data: Record<string, unknown>) {
+  return validateWipDocument(wipTemplateId, WIP_NAMESPACE, data)
 }
 
 // ─── Validate a single spreadsheet buffer ────────────────────────────────────
@@ -165,6 +192,98 @@ export function validateSheet(
   }
 }
 
+// ─── Validate a single spreadsheet buffer via WIP (delegated) ────────────────
+// Same parse / missing-column contract as validateSheet, but each row is sent
+// to WIP as a document payload (keyed by field NAME) and validated there.
+// Errors come back per-field; we map them back to the spreadsheet column
+// (field LABEL) and row number to preserve the existing UI shape.
+const CONCURRENCY = 8
+
+async function validateSheetViaWip(
+  buffer: Buffer,
+  filename: string,
+  wipTemplateId: string,
+  fields: WipTemplateField[]
+): Promise<FileResult> {
+  let wb: XLSX.WorkBook
+  try {
+    wb = XLSX.read(buffer, { type: 'buffer', cellDates: true })
+  } catch {
+    return {
+      filename, rowCount: 0, errorCount: 1, missingColumns: [],
+      errors: [{ row: 0, column: '', value: '', message: 'Could not parse file — ensure it is a valid .xlsx, .xls, or .csv' }],
+    }
+  }
+
+  const sheetName = wb.SheetNames[0]
+  const ws = sheetName ? wb.Sheets[sheetName] : undefined
+  if (!ws) {
+    return { filename, rowCount: 0, errorCount: 1, missingColumns: [],
+      errors: [{ row: 0, column: '', value: '', message: 'Spreadsheet has no sheets' }] }
+  }
+
+  const rows = XLSX.utils.sheet_to_json<(string | number | boolean | Date | null)[]>(
+    ws, { header: 1, defval: null }
+  ) as (string | number | boolean | Date | null)[][]
+
+  if (rows.length === 0) {
+    return { filename, rowCount: 0, errorCount: 0, missingColumns: [], errors: [] }
+  }
+
+  const headerRow = (rows[0] ?? []).map(v => (v != null ? String(v).trim() : ''))
+  const headerIndex = new Map<string, number>(headerRow.map((h, i) => [h, i]))
+  const dataRows = rows.slice(1)
+
+  // Header ↔ field join is on LABEL (the spreadsheet header); the document
+  // payload is keyed by NAME (the slug). Both live on every template field.
+  const presentFields = fields.filter(f => headerIndex.has(f.label))
+  const missingColumns = fields.filter(f => !headerIndex.has(f.label)).map(f => f.label)
+  // Mandatory columns absent from the sheet are reported once (missingColumns);
+  // suppress the identical per-row "field required" flood WIP would emit.
+  const missingFieldNames = new Set(fields.filter(f => !headerIndex.has(f.label)).map(f => f.name))
+  const nameToLabel = new Map(fields.map(f => [f.name, f.label]))
+
+  const errors: ValidationError[] = []
+
+  for (let start = 0; start < dataRows.length && errors.length < MAX_ERRORS; start += CONCURRENCY) {
+    const chunk = dataRows.slice(start, start + CONCURRENCY)
+    const validated = await Promise.all(
+      chunk.map(async (row, j) => {
+        const rowNum = start + j + 2  // 1-indexed, row 1 is header
+        const data: Record<string, unknown> = {}
+        for (const f of presentFields) {
+          const cell = (row ?? [])[headerIndex.get(f.label)!]
+          if (cell != null && String(cell).trim() !== '') {
+            data[f.name] = coerce(cell, f.type)
+          }
+        }
+        const res = await validateRow(wipTemplateId, data)
+        return { rowNum, data, res }
+      })
+    )
+
+    for (const { rowNum, data, res } of validated) {
+      if (errors.length >= MAX_ERRORS) break
+      if (res.valid) continue
+      for (const e of res.errors) {
+        if (errors.length >= MAX_ERRORS) break
+        if (e.field && missingFieldNames.has(e.field)) continue  // already in missingColumns
+        const column = e.field ? (nameToLabel.get(e.field) ?? e.field) : ''
+        const value = e.field ? String(data[e.field] ?? '') : ''
+        errors.push({ row: rowNum, column, value, message: e.message })
+      }
+    }
+  }
+
+  return {
+    filename,
+    rowCount: dataRows.length,
+    errorCount: errors.length,
+    missingColumns,
+    errors,
+  }
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 const upload = multer({ storage: multer.memoryStorage() })
@@ -188,37 +307,27 @@ export function createValidateHandler(): RequestHandler[] {
     try {
       // Load VAL_TEMPLATE doc to check if it has a linked WIP template
       const valTemplate = await getValTemplateDoc(templateId)
-      let columns: ColumnSpec[]
-      const lovSets = new Map<string, Set<string>>()
+      let results: FileResult[]
 
       if (valTemplate.data.wip_template_id) {
-        // New path: derive ColumnSpec[] from WIP template fields
+        // New path: delegate validation to WIP (single source of validation
+        // truth) — each row is validated as a document against the WIP template.
         const wipTemplate = await getWipTemplate(valTemplate.data.wip_template_id)
-        columns = wipTemplate.fields.map(f => ({
-          column_name: f.label,
-          column_type: f.semantic_type || f.type,
-          required: f.mandatory,
-          lov_terminology: f.terminology_ref,
-        }))
-
-        // Load LOV values for term fields
-        await Promise.all(
-          columns
-            .filter(c => c.column_type === 'term' && c.lov_terminology)
-            .map(async c => {
-              const values = await getTermValues(c.lov_terminology!)
-              lovSets.set(c.column_name, values)
-            })
+        results = await Promise.all(
+          files.map(f =>
+            validateSheetViaWip(f.buffer, f.originalname, wipTemplate.template_id, wipTemplate.fields)
+          )
         )
       } else {
-        // Legacy path: load from VAL_COLUMN documents
+        // Legacy path: local validation against VAL_COLUMN specs
+        const lovSets = new Map<string, Set<string>>()
         const colTemplateId = await getTemplateIdByValue(WIP_NAMESPACE, 'VAL_COLUMN')
         const colsResult = await queryDocuments(colTemplateId, WIP_NAMESPACE, {
           filters: [{ field: 'data.template', operator: 'eq', value: templateId }],
           pageSize: 100,
         })
 
-        columns = colsResult.items
+        const columns: ColumnSpec[] = colsResult.items
           .sort((a, b) => {
             const aIdx = ((a as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
             const bIdx = ((b as Record<string, unknown>)['data'] as Record<string, unknown>)['column_index'] as number ?? 0
@@ -242,12 +351,12 @@ export function createValidateHandler(): RequestHandler[] {
               lovSets.set(c.column_name, values)
             })
         )
-      }
 
-      // Validate each uploaded file
-      const results = files.map(f =>
-        validateSheet(f.buffer, f.originalname, columns, lovSets)
-      )
+        // Validate each uploaded file locally
+        results = files.map(f =>
+          validateSheet(f.buffer, f.originalname, columns, lovSets)
+        )
+      }
 
       const totalErrors = results.reduce((sum, r) => sum + r.errorCount, 0)
 
