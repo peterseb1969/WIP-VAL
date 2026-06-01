@@ -70,6 +70,24 @@ function isNewResponse(r: DetailResponse): r is DetailResponseNew {
   return 'fields' in r
 }
 
+// ─── Export (template → Excel) ─────────────────────────────────────────────────
+
+interface ExportNote {
+  field?: string
+  feature: string
+  severity: 'lossy' | 'blocking'
+  action: 'degraded' | 'skipped'
+  detail: string
+}
+
+interface PreflightResp {
+  hardRefused: boolean
+  hardRefuseReason?: string
+  blocking: ExportNote[]
+  lossy: ExportNote[]
+  skipFields: string[]
+}
+
 // ─── Editable field state ────────────────────────────────────────────────────
 
 interface EditableField {
@@ -138,6 +156,9 @@ export default function TemplateDetail() {
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [expandedField, setExpandedField] = useState<string | null>(null)
+  const [exportPanel, setExportPanel] = useState<
+    null | { loading: boolean; result?: PreflightResp; error?: string }
+  >(null)
 
   useEffect(() => {
     if (!id) return
@@ -234,6 +255,27 @@ export default function TemplateDetail() {
     }
   }
 
+  async function openExport() {
+    const wipId = template?.data.wip_template_id
+    if (!wipId) return
+    setExportPanel({ loading: true })
+    try {
+      const res = await fetch(`/api/templates/${wipId}/export/preflight`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
+        throw new Error(body.error)
+      }
+      setExportPanel({ loading: false, result: await res.json() as PreflightResp })
+    } catch (e: unknown) {
+      setExportPanel({ loading: false, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  function exportUrl(mode: 'template' | 'data', force: boolean): string {
+    const wipId = template?.data.wip_template_id
+    return `/api/templates/${wipId}/export?format=vendor&mode=${mode}${force ? '&force=true' : ''}`
+  }
+
   const dirtyCount = fields.filter(f => f.dirty).length
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -292,6 +334,14 @@ export default function TemplateDetail() {
             {saveSuccess && (
               <span className="text-xs text-success font-medium">Changes saved</span>
             )}
+            {isNewPath && template.data.wip_template_id && (
+              <button
+                onClick={openExport}
+                className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-text hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                Export to Excel
+              </button>
+            )}
             <button
               onClick={handleDelete}
               disabled={deleting || phase === 'saving'}
@@ -313,6 +363,63 @@ export default function TemplateDetail() {
         {saveError && (
           <div className="mb-4 rounded-lg border border-danger/20 bg-danger/5 p-4">
             <p className="text-sm font-medium text-danger">{saveError}</p>
+          </div>
+        )}
+
+        {/* Export panel */}
+        {exportPanel && (
+          <div className="mb-4 rounded-lg border border-gray-200 bg-surface p-4 shadow-sm">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-text">Export to Excel (vendor)</h3>
+              <button onClick={() => setExportPanel(null)} className="text-xs text-text-muted hover:text-text">✕ Close</button>
+            </div>
+            {exportPanel.loading && <p className="text-sm text-text-muted">Checking compatibility…</p>}
+            {exportPanel.error && <p className="text-sm font-medium text-danger">{exportPanel.error}</p>}
+            {exportPanel.result && (exportPanel.result.hardRefused ? (
+              <p className="text-sm font-medium text-danger">Cannot export: {exportPanel.result.hardRefuseReason}</p>
+            ) : (
+              <div className="space-y-3">
+                {exportPanel.result.blocking.length > 0 && (
+                  <div className="rounded border border-amber-200 bg-amber-50 p-3">
+                    <p className="mb-1 text-xs font-semibold text-amber-800">
+                      {exportPanel.result.blocking.length} feature(s) can’t be represented in vendor and will be skipped:
+                    </p>
+                    <ul className="list-disc space-y-0.5 pl-4 text-xs text-amber-800">
+                      {exportPanel.result.blocking.map((b, i) => <li key={i}>{b.detail}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {exportPanel.result.lossy.length > 0 && (
+                  <div className="rounded border border-gray-200 bg-gray-50 p-3">
+                    <p className="mb-1 text-xs font-semibold text-text-muted">
+                      {exportPanel.result.lossy.length} feature(s) will be degraded:
+                    </p>
+                    <ul className="list-disc space-y-0.5 pl-4 text-xs text-text-muted">
+                      {exportPanel.result.lossy.map((l, i) => <li key={i}>{l.detail}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {exportPanel.result.blocking.length === 0 && exportPanel.result.lossy.length === 0 && (
+                  <p className="text-xs text-success">Fully representable — clean export.</p>
+                )}
+                <div className="flex items-center gap-2 pt-1">
+                  <a
+                    href={exportUrl('template', exportPanel.result.blocking.length > 0)}
+                    download
+                    className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-light"
+                  >
+                    {exportPanel.result.blocking.length > 0 ? `Download schema (skip ${exportPanel.result.blocking.length})` : 'Download schema'}
+                  </a>
+                  <a
+                    href={exportUrl('data', exportPanel.result.blocking.length > 0)}
+                    download
+                    className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-text hover:bg-gray-50"
+                  >
+                    Download with data
+                  </a>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

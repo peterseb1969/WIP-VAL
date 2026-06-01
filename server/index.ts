@@ -15,6 +15,7 @@ import {
   downloadTemplateFileHandler,
 } from './val-templates.js'
 import { createValidateHandler } from './validate.js'
+import { createExportTemplateHandler, createExportPreflightHandler } from './export-template.js'
 import {
   listValRunsHandler,
   getValRunHandler,
@@ -90,6 +91,10 @@ app.get('/api/val-templates/:id/download', downloadTemplateFileHandler())
 app.patch('/api/val-templates/:id/columns', patchValTemplateColumnsHandler())
 app.patch('/api/val-templates/:id/fields', patchValTemplateFieldsHandler())
 app.delete('/api/val-templates/:id', deleteValTemplateHandler())
+
+// --- Template → Excel export (operates on a raw WIP template_id) ---
+app.get('/api/templates/:id/export/preflight', createExportPreflightHandler())
+app.get('/api/templates/:id/export', createExportTemplateHandler())
 
 // --- Document validation ---
 app.post('/api/validate', ...createValidateHandler())

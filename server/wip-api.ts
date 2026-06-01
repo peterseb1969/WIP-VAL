@@ -272,15 +272,25 @@ export interface WipTemplateField {
   type: string
   mandatory: boolean
   terminology_ref?: string
+  reference_type?: string
   semantic_type?: string
-  validation?: { pattern?: string; minimum?: number; maximum?: number }
+  default_value?: unknown
+  validation?: { pattern?: string; minimum?: number; maximum?: number; min_length?: number; max_length?: number }
   metadata?: Record<string, unknown>
+}
+
+export interface WipTemplateRule {
+  type: string
+  description?: string
 }
 
 export async function getWipTemplate(templateId: string): Promise<{
   template_id: string
   value: string
   version: number
+  usage?: string
+  extends?: string | null
+  rules: WipTemplateRule[]
   fields: WipTemplateField[]
   identity_fields: string[]
   metadata?: Record<string, unknown>
@@ -288,13 +298,48 @@ export async function getWipTemplate(templateId: string): Promise<{
   const list = await wip().templates.listTemplates({ namespace: WIP_NAMESPACE, page_size: 200 })
   const match = list.items.find(t => t.template_id === templateId)
   if (!match) throw new Error(`WIP template '${templateId}' not found`)
+  const m = match as unknown as Record<string, unknown>
   return {
     template_id: match.template_id,
     value: match.value,
     version: match.version,
+    usage: m['usage'] as string | undefined,
+    extends: (m['extends'] as string | null | undefined) ?? null,
+    rules: (m['rules'] as WipTemplateRule[] | undefined) ?? [],
     fields: (match.fields as unknown as WipTemplateField[]) ?? [],
     identity_fields: match.identity_fields ?? [],
     metadata: match.metadata as unknown as Record<string, unknown> | undefined,
+  }
+}
+
+// Like getWipTemplate but uses getTemplate(id) which returns RESOLVED fields
+// (own + inherited). Required for export so inherited columns aren't dropped.
+export async function getWipTemplateResolved(templateId: string): Promise<{
+  template_id: string
+  value: string
+  label: string
+  description: string
+  version: number
+  usage?: string
+  extends?: string | null
+  rules: WipTemplateRule[]
+  fields: WipTemplateField[]
+  identity_fields: string[]
+  metadata?: Record<string, unknown>
+}> {
+  const t = (await wip().templates.getTemplate(templateId)) as unknown as Record<string, unknown>
+  return {
+    template_id: t['template_id'] as string,
+    value: t['value'] as string,
+    label: (t['label'] as string) ?? (t['value'] as string),
+    description: (t['description'] as string) ?? '',
+    version: t['version'] as number,
+    usage: t['usage'] as string | undefined,
+    extends: (t['extends'] as string | null | undefined) ?? null,
+    rules: (t['rules'] as WipTemplateRule[] | undefined) ?? [],
+    fields: (t['fields'] as unknown as WipTemplateField[]) ?? [],
+    identity_fields: (t['identity_fields'] as string[] | undefined) ?? [],
+    metadata: t['metadata'] as Record<string, unknown> | undefined,
   }
 }
 
