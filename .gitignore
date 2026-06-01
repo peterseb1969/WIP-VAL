@@ -5,3 +5,12 @@ dist/
 .DS_Store
 .claude/
 yac-discussions
+
+# scratch verification scripts (run via tsx; not part of the build)
+roundtrip-vendor.ts
+preflight-test.ts
+# binary test fixtures
+test-data/
+# stray local artifacts
+.claude-context-pct
+Users/
