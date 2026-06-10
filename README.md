@@ -17,7 +17,11 @@ npm run dev        # Express :3015 + Vite :5181 concurrently
 ```
 
 Requires a `.env` with `WIP_API_KEY` (and optionally `WIP_BASE_URL`,
-`WIP_NAMESPACE`). Bootstrap the data model with `npx tsx data-model/bootstrap.ts`.
+`WIP_NAMESPACE`). On a WIP instance without the `wip-val` namespace the app
+shows a one-click bootstrap screen (`/api/bootstrap/status` + `/run`) that
+provisions namespace, terminologies, and templates from `data-model/*.json`;
+the same idempotent provisioner is also runnable headless with
+`npx tsx data-model/bootstrap.ts`.
 
 ## Development with wip-deploy
 

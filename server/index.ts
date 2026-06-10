@@ -25,6 +25,7 @@ import {
   deleteValRunHandler,
   revalidateRunsHandler,
 } from './val-runs.js'
+import { checkBootstrapStatus, runBootstrap, type BootstrapProgress } from './bootstrap.js'
 
 // APP_BASE_PATH — external path prefix when deployed behind wip-router
 // (e.g. /apps/wip-val). Everything mounts on a Router under it so cookies,
@@ -67,6 +68,21 @@ router.use(requireAuth())
 // --- Health (must answer locally without WIP reachable) ---
 router.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+// --- Bootstrap (provision the wip-val namespace on a fresh WIP instance) ---
+router.get('/api/bootstrap/status', async (_req, res) => {
+  res.json(await checkBootstrapStatus())
+})
+
+router.post('/api/bootstrap/run', async (_req, res) => {
+  const steps: BootstrapProgress[] = []
+  try {
+    await runBootstrap(e => steps.push(e))
+    res.json({ ok: true, steps })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message, steps })
+  }
 })
 
 // --- Ask endpoint ---

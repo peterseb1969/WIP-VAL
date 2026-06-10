@@ -29,6 +29,9 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY server/ server/
 COPY tsconfig.json ./
 
+# Seed files for /api/bootstrap/run (provisions wip-val on a fresh instance)
+COPY data-model/ data-model/
+
 # Copy built frontend
 COPY --from=build /app/dist dist/
 

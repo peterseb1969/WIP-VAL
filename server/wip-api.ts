@@ -14,6 +14,12 @@ function wip() {
   return _client
 }
 
+// Raw client accessor for modules that need API surface not wrapped here
+// (bootstrap uses registry/def-store/template-store directly).
+export function wipClient() {
+  return wip()
+}
+
 const _templateIdCache = new Map<string, string>()
 
 export async function getTemplateIdByValue(namespace: string, value: string): Promise<string> {
