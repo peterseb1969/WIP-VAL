@@ -52,23 +52,32 @@ export function createSaveTemplateHandler(): RequestHandler {
     try {
       const createdBy = (req.session as { user?: { email?: string } })?.user?.email ?? 'wip-val'
 
-      // 1. Create/upsert LOV terminologies for term-typed fields
+      // 1. Create/upsert LOV terminologies for term-typed fields.
+      // Fields can legitimately share a terminology (vendor code lists), so
+      // dedupe by terminology value first — one get-or-create per unique
+      // value. Creating the same value concurrently races: the platform's
+      // atomic claim gate rejects all but one ("already exists / collision
+      // across namespaces").
       const terminologyMap = new Map<string, string>()
       const terminologiesCreated: string[] = []
 
       const termFields = body.fields.filter(f => f.type === 'term' && (f.terminologyValues?.length ?? 0) > 0)
+      const byTermValue = new Map<string, { label: string; values: Set<string>; fieldNames: string[] }>()
+      for (const field of termFields) {
+        const termValue = field.terminologyName
+          ? toSlug(field.terminologyName)
+          : lovTerminologyValue(body.name, field.name)
+        const group = byTermValue.get(termValue) ?? { label: field.label, values: new Set<string>(), fieldNames: [] }
+        for (const v of field.terminologyValues ?? []) group.values.add(v)
+        group.fieldNames.push(field.name)
+        byTermValue.set(termValue, group)
+      }
+
       await Promise.all(
-        termFields.map(async field => {
-          const termValue = field.terminologyName
-            ? toSlug(field.terminologyName)
-            : lovTerminologyValue(body.name, field.name)
-          const term = await getOrCreateTerminology(
-            WIP_NAMESPACE,
-            termValue,
-            field.label
-          )
-          await upsertTerms(term.terminology_id, WIP_NAMESPACE, field.terminologyValues ?? [])
-          terminologyMap.set(field.name, termValue)
+        [...byTermValue.entries()].map(async ([termValue, group]) => {
+          const term = await getOrCreateTerminology(WIP_NAMESPACE, termValue, group.label)
+          await upsertTerms(term.terminology_id, WIP_NAMESPACE, [...group.values])
+          for (const fieldName of group.fieldNames) terminologyMap.set(fieldName, termValue)
           terminologiesCreated.push(termValue)
         })
       )

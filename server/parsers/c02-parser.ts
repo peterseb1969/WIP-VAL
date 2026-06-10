@@ -126,7 +126,11 @@ export function parseC02(wb: XLSX.WorkBook, fileInfo: { wipFileId?: string; wipF
         mandatory: isHeaderCellRed(ws, idx),
         semanticType: semantic,
         terminologyValues,
-        terminologyName: lov ? lov.sheetName : undefined,
+        // No terminologyName: c02 LOVs share one "Validation Sheet", so the
+        // sheet name would collapse every term field into a single terminology.
+        // Leaving it unset makes save-template fall back to the per-field
+        // LOV_<TEMPLATE>_<FIELD> naming.
+        terminologyName: undefined,
       } satisfies ParsedField
     })
 
