@@ -112,6 +112,8 @@ function formatBadge(format: SpreadsheetFormat | null): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+const BASE_PATH = import.meta.env.BASE_URL || '/'
+
 type Phase = 'idle' | 'uploading' | 'reviewing' | 'saving' | 'saved'
 
 export default function TemplateParser() {
@@ -138,7 +140,7 @@ export default function TemplateParser() {
     const fd = new FormData()
     fd.append('file', file)
     try {
-      const res = await fetch('/api/template-parser/upload', { method: 'POST', body: fd })
+      const res = await fetch(`${BASE_PATH}api/template-parser/upload`, { method: 'POST', body: fd })
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText }))
         throw new Error(body.error || res.statusText)
@@ -237,7 +239,7 @@ export default function TemplateParser() {
     }
 
     try {
-      const res = await fetch('/api/template-parser/save', {
+      const res = await fetch(`${BASE_PATH}api/template-parser/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

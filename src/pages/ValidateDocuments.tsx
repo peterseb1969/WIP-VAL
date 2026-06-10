@@ -39,6 +39,7 @@ interface ValidationResponse {
 type Phase = 'idle' | 'validating' | 'results'
 
 const ACCEPT = '.xlsx,.xls,.csv'
+const BASE_PATH = import.meta.env.BASE_URL || '/'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ export default function ValidateDocuments() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    fetch('/api/val-templates?pageSize=100')
+    fetch(`${BASE_PATH}api/val-templates?pageSize=100`)
       .then(r => r.ok ? r.json() : r.json().then((b: { error: string }) => Promise.reject(b.error)))
       .then((data: { items: TemplateOption[] }) => setTemplates(data.items))
       .catch((e: unknown) => setTemplatesError(typeof e === 'string' ? e : 'Failed to load templates'))
@@ -89,7 +90,7 @@ export default function ValidateDocuments() {
     for (const f of files) form.append('files', f)
 
     try {
-      const res = await fetch('/api/validate', { method: 'POST', body: form })
+      const res = await fetch(`${BASE_PATH}api/validate`, { method: 'POST', body: form })
       const data = await res.json() as ValidationResponse | { error: string }
       if (!res.ok) {
         setValidateError('error' in data ? data.error : 'Validation failed')

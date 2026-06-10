@@ -1,5 +1,7 @@
 import 'dotenv/config'  // Must be first — loads .env before any other module reads process.env
-import express from 'express'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import express, { Router } from 'express'
 import cors from 'cors'
 import session from 'express-session'
 import { initAgent, ask } from './agent.js'
@@ -24,8 +26,20 @@ import {
   revalidateRunsHandler,
 } from './val-runs.js'
 
-const PORT = parseInt(process.env.PORT || '3001')
+// APP_BASE_PATH — external path prefix when deployed behind wip-router
+// (e.g. /apps/wip-val). Everything mounts on a Router under it so cookies,
+// OIDC redirects, and asset URLs all match. '/' in standalone dev.
+// See FR-YAC/papers/wip-deployable-app-contract.md.
+const BASE_PATH = (process.env.APP_BASE_PATH || '').replace(/\/$/, '') || '/'
+
+// 3015: WIP-VAL's assigned Express port (3001=react-console, 3011/3012 taken,
+// 3014=wip-aa — coordinate via the apps/ manifests before changing).
+const PORT = parseInt(process.env.PORT || '3015')
 const app = express()
+const router = Router()
+
+// Trust the reverse proxy (Caddy/ingress) for HTTPS termination.
+app.set('trust proxy', 1)
 
 app.use(cors())
 app.use(express.json())
@@ -39,23 +53,24 @@ app.use(session({
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    path: BASE_PATH.endsWith('/') ? BASE_PATH : `${BASE_PATH}/`,
   },
 }))
 
 // --- Auth routes ---
-app.get('/auth/callback', (req, res) => { handleCallback(req, res) })
-app.get('/auth/logout', handleLogout)
+router.get('/auth/callback', (req, res) => { handleCallback(req, res) })
+router.get('/auth/logout', handleLogout)
 
 // --- Auth middleware (no-op when OIDC_ISSUER is not set) ---
-app.use(requireAuth())
+router.use(requireAuth())
 
-// --- Health ---
-app.get('/api/health', (_req, res) => {
+// --- Health (must answer locally without WIP reachable) ---
+router.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
 // --- Ask endpoint ---
-app.post('/api/ask', async (req, res) => {
+router.post('/api/ask', async (req, res) => {
   const { question, sessionId } = req.body
   if (!question) {
     res.status(400).json({ error: 'question is required' })
@@ -70,41 +85,60 @@ app.post('/api/ask', async (req, res) => {
   }
 })
 
-// --- User info (for authenticated apps) ---
-app.get('/api/me', (req, res) => {
+// --- User info — gateway headers (X-WIP-User) first, then OIDC session ---
+router.get('/api/me', (req, res) => {
+  const gwUser = req.headers['x-wip-user'] as string | undefined
+  if (gwUser) {
+    const groups = (req.headers['x-wip-groups'] as string || '').split(',').filter(Boolean)
+    res.json({ email: gwUser, groups, method: 'gateway' })
+    return
+  }
   if (req.session.user) {
     res.json(req.session.user)
-  } else {
-    res.json({ anonymous: true })
+    return
   }
+  res.json({ anonymous: true })
 })
 
 // --- Template parser ---
-app.post('/api/template-parser/upload', ...createUploadHandler())
-app.post('/api/template-parser/save-legacy', createSaveHandler())
-app.post('/api/template-parser/save', createSaveTemplateHandler())
+router.post('/api/template-parser/upload', ...createUploadHandler())
+router.post('/api/template-parser/save-legacy', createSaveHandler())
+router.post('/api/template-parser/save', createSaveTemplateHandler())
 
 // --- Validation templates ---
-app.get('/api/val-templates', listValTemplatesHandler())
-app.get('/api/val-templates/:id', getValTemplateHandler())
-app.get('/api/val-templates/:id/download', downloadTemplateFileHandler())
-app.patch('/api/val-templates/:id/columns', patchValTemplateColumnsHandler())
-app.patch('/api/val-templates/:id/fields', patchValTemplateFieldsHandler())
-app.delete('/api/val-templates/:id', deleteValTemplateHandler())
+router.get('/api/val-templates', listValTemplatesHandler())
+router.get('/api/val-templates/:id', getValTemplateHandler())
+router.get('/api/val-templates/:id/download', downloadTemplateFileHandler())
+router.patch('/api/val-templates/:id/columns', patchValTemplateColumnsHandler())
+router.patch('/api/val-templates/:id/fields', patchValTemplateFieldsHandler())
+router.delete('/api/val-templates/:id', deleteValTemplateHandler())
 
 // --- Template → Excel export (operates on a raw WIP template_id) ---
-app.get('/api/templates/:id/export/preflight', createExportPreflightHandler())
-app.get('/api/templates/:id/export', createExportTemplateHandler())
+router.get('/api/templates/:id/export/preflight', createExportPreflightHandler())
+router.get('/api/templates/:id/export', createExportTemplateHandler())
 
 // --- Document validation ---
-app.post('/api/validate', ...createValidateHandler())
+router.post('/api/validate', ...createValidateHandler())
 
 // --- Validation runs ---
-app.get('/api/val-runs', listValRunsHandler())
-app.post('/api/val-runs/revalidate', revalidateRunsHandler())
-app.get('/api/val-runs/:id', getValRunHandler())
-app.get('/api/val-runs/:id/download', downloadRunFileHandler())
-app.delete('/api/val-runs/:id', deleteValRunHandler())
+router.get('/api/val-runs', listValRunsHandler())
+router.post('/api/val-runs/revalidate', revalidateRunsHandler())
+router.get('/api/val-runs/:id', getValRunHandler())
+router.get('/api/val-runs/:id/download', downloadRunFileHandler())
+router.delete('/api/val-runs/:id', deleteValRunHandler())
+
+// --- In production, serve the built frontend from dist/ with SPA fallback ---
+if (process.env.NODE_ENV === 'production') {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const distPath = path.resolve(__dirname, '..', 'dist')
+  router.use(express.static(distPath))
+  const indexHtml = path.join(distPath, 'index.html')
+  router.get('/', (_req, res) => { res.sendFile(indexHtml) })
+  router.get('{*path}', (_req, res) => { res.sendFile(indexHtml) })
+}
+
+// Mount everything at BASE_PATH
+app.use(BASE_PATH, router)
 
 // --- Start ---
 async function main() {
@@ -112,6 +146,9 @@ async function main() {
   await initAgent()
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`)
+    if (BASE_PATH !== '/') {
+      console.log(`  base path: ${BASE_PATH}`)
+    }
   })
 }
 

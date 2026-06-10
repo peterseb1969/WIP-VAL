@@ -48,6 +48,7 @@ interface TemplateOption {
 type Phase = 'idle' | 'loading' | 'revalidating'
 
 const PAGE_SIZE = 20
+const BASE_PATH = import.meta.env.BASE_URL || '/'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ export default function ValidationRuns() {
 
   // Load templates for filter dropdown
   useEffect(() => {
-    fetch('/api/val-templates?pageSize=100')
+    fetch(`${BASE_PATH}api/val-templates?pageSize=100`)
       .then(r => r.ok ? r.json() : Promise.reject())
       .then((data: { items: TemplateOption[] }) => setTemplates(data.items))
       .catch(() => {})
@@ -81,7 +82,7 @@ export default function ValidationRuns() {
     const params = new URLSearchParams({ page: String(p), pageSize: String(PAGE_SIZE) })
     if (tpl) params.set('template', tpl)
     if (status) params.set('status', status)
-    fetch(`/api/val-runs?${params}`)
+    fetch(`${BASE_PATH}api/val-runs?${params}`)
       .then(r => r.ok ? r.json() : r.json().then((b: { error: string }) => Promise.reject(b.error)))
       .then((data: ListResponse) => {
         setItems(data.items)
@@ -133,7 +134,7 @@ export default function ValidationRuns() {
     setPhase('revalidating')
     setRevalidateResults(null)
     try {
-      const res = await fetch('/api/val-runs/revalidate', {
+      const res = await fetch(`${BASE_PATH}api/val-runs/revalidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runIds: [...selected] }),
@@ -159,7 +160,7 @@ export default function ValidationRuns() {
   async function handleArchive(ids: string[]) {
     try {
       await Promise.all(ids.map(id =>
-        fetch(`/api/val-runs/${id}`, { method: 'DELETE' })
+        fetch(`${BASE_PATH}api/val-runs/${id}`, { method: 'DELETE' })
       ))
       setSelected(new Set())
       fetchRuns(page, templateFilter, statusFilter)
@@ -334,7 +335,7 @@ export default function ValidationRuns() {
                         <td className="px-3 py-2.5 text-right">
                           <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             <a
-                              href={`/api/val-runs/${run.document_id}/download`}
+                              href={`${BASE_PATH}api/val-runs/${run.document_id}/download`}
                               className="text-xs text-primary hover:underline"
                               download
                             >

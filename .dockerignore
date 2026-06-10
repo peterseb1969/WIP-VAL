@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.claude
+.env
+.venv
+# root-level markdown only — an unscoped *.md would silently drop runtime files
+# like server/prompts/*.md (contract paper, Skip 8)
+/*.md
+docs
+test-data
+templates
+tools
+yac-discussions
+Users
+*.log

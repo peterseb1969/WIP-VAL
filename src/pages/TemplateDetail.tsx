@@ -88,6 +88,8 @@ interface PreflightResp {
   skipFields: string[]
 }
 
+const BASE_PATH = import.meta.env.BASE_URL || '/'
+
 // ─── Editable field state ────────────────────────────────────────────────────
 
 interface EditableField {
@@ -162,7 +164,7 @@ export default function TemplateDetail() {
 
   useEffect(() => {
     if (!id) return
-    fetch(`/api/val-templates/${id}`)
+    fetch(`${BASE_PATH}api/val-templates/${id}`)
       .then(r => r.ok ? r.json() : r.json().then((b: { error: string }) => Promise.reject(b.error)))
       .then((data: DetailResponse) => {
         setTemplate(data.template)
@@ -205,7 +207,7 @@ export default function TemplateDetail() {
           label: f.label,
           mandatory: f.mandatory,
         }))
-        const res = await fetch(`/api/val-templates/${id}/fields`, {
+        const res = await fetch(`${BASE_PATH}api/val-templates/${id}/fields`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patches),
@@ -220,7 +222,7 @@ export default function TemplateDetail() {
           column_type: f.type,
           display_name: f.label,
         }))
-        const res = await fetch(`/api/val-templates/${id}/columns`, {
+        const res = await fetch(`${BASE_PATH}api/val-templates/${id}/columns`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patches),
@@ -243,7 +245,7 @@ export default function TemplateDetail() {
     if (!window.confirm(`Delete "${template?.data.name}"? This cannot be undone.`)) return
     setDeleting(true)
     try {
-      const res = await fetch(`/api/val-templates/${id}`, { method: 'DELETE' })
+      const res = await fetch(`${BASE_PATH}api/val-templates/${id}`, { method: 'DELETE' })
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
         throw new Error(body.error)
@@ -260,7 +262,7 @@ export default function TemplateDetail() {
     if (!wipId) return
     setExportPanel({ loading: true })
     try {
-      const res = await fetch(`/api/templates/${wipId}/export/preflight`)
+      const res = await fetch(`${BASE_PATH}api/templates/${wipId}/export/preflight`)
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText })) as { error: string }
         throw new Error(body.error)
@@ -273,7 +275,7 @@ export default function TemplateDetail() {
 
   function exportUrl(mode: 'template' | 'data', force: boolean): string {
     const wipId = template?.data.wip_template_id
-    return `/api/templates/${wipId}/export?format=vendor&mode=${mode}${force ? '&force=true' : ''}`
+    return `${BASE_PATH}api/templates/${wipId}/export?format=vendor&mode=${mode}${force ? '&force=true' : ''}`
   }
 
   const dirtyCount = fields.filter(f => f.dirty).length
@@ -459,7 +461,7 @@ export default function TemplateDetail() {
             <div className="col-span-2 sm:col-span-4">
               <p className="text-xs font-medium text-text-muted uppercase tracking-wide mb-0.5">Source file</p>
               <a
-                href={`/api/val-templates/${template.document_id}/download`}
+                href={`${BASE_PATH}api/val-templates/${template.document_id}/download`}
                 download
                 className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
               >

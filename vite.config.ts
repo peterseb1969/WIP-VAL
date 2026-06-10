@@ -1,14 +1,33 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Base path for the deployed app (e.g. /apps/wip-val/) when behind a router
+// that doesn't strip the prefix. Used for Vite's public `base` so emitted
+// asset URLs and index.html references resolve correctly behind the ingress.
+//
+// Resolution order (see FR-YAC/papers/wip-deployable-app-contract.md):
+//   1. VITE_BASE_PATH — explicit, used by prod build (Dockerfile ARG).
+//   2. APP_BASE_PATH — the server-side base. Fallback for wip-deploy's
+//      dev target, which sets APP_BASE_PATH but not VITE_BASE_PATH.
+//   3. '/' — local dev default.
+const RESOLVED_BASE = process.env.VITE_BASE_PATH || process.env.APP_BASE_PATH || '/'
+const BASE_WITH_SLASH = RESOLVED_BASE.endsWith('/') ? RESOLVED_BASE : `${RESOLVED_BASE}/`
+const BASE_PATH = RESOLVED_BASE.replace(/\/$/, '')
+
 export default defineConfig({
+  base: BASE_WITH_SLASH,
   plugins: [react()],
   server: {
-    port: 5180,
+    // 0.0.0.0 lets Vite accept connections from outside the container
+    // (wip-deploy --target dev with --app-source). Harmless on host.
+    host: '0.0.0.0',
+    // 5181: WIP-VAL's assigned Vite port (5173=wip-kb, 5174=react-console,
+    // 5180=wip-aa). Express is on 3015.
+    port: 5181,
     strictPort: true,
     proxy: {
-      '/api': 'http://localhost:3001',
-      '/wip': 'http://localhost:3001',
+      [`${BASE_PATH}/api`]: 'http://localhost:3015',
+      [`${BASE_PATH}/wip`]: 'http://localhost:3015',
     },
   },
 })

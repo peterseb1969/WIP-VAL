@@ -27,6 +27,7 @@ interface ListResponse {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+const BASE_PATH = import.meta.env.BASE_URL || '/'
 const PAGE_SIZE = 20
 
 export default function TemplateList() {
@@ -45,7 +46,7 @@ export default function TemplateList() {
     setError(null)
     const params = new URLSearchParams({ page: String(p), pageSize: String(PAGE_SIZE) })
     if (q) params.set('search', q)
-    fetch(`/api/val-templates?${params}`)
+    fetch(`${BASE_PATH}api/val-templates?${params}`)
       .then(r => r.ok ? r.json() : r.json().then((b: { error: string }) => Promise.reject(b.error)))
       .then((data: ListResponse) => {
         setItems(data.items)
