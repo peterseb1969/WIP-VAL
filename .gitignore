@@ -3,7 +3,9 @@ dist/
 .env
 # stray tarballs stay out, but the bundled WIP lib tarballs must be tracked —
 # CI (GitHub runner) builds images from the repo alone, and npm ci installs
-# @wip/* from libs/ (see package.json file: deps)
+# @wip/* from libs/ (see package.json file: deps). Convention (CASE-442):
+# versioned immutable tarballs only — never a mutable -latest.tgz, whose
+# changing content desyncs from the lockfile's pinned integrity hash.
 *.tgz
 !libs/*.tgz
 .DS_Store
