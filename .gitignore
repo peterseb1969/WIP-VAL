@@ -1,7 +1,11 @@
 node_modules/
 dist/
 .env
+# stray tarballs stay out, but the bundled WIP lib tarballs must be tracked —
+# CI (GitHub runner) builds images from the repo alone, and npm ci installs
+# @wip/* from libs/ (see package.json file: deps)
 *.tgz
+!libs/*.tgz
 .DS_Store
 .claude/
 yac-discussions
