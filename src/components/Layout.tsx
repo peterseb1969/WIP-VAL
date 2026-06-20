@@ -1,4 +1,5 @@
 import { Outlet, NavLink, useLocation } from 'react-router-dom'
+import { WipFooter } from '@wip/react'
 
 const NAV_ITEMS = [
   {
@@ -72,11 +73,13 @@ export default function Layout() {
         {/* Main content */}
         <div className="flex-1 min-w-0 flex flex-col">
           <Outlet />
-          {/* Local footer — @wip/react 0.9.0 has no WipFooter (added in 0.13.0,
-              which is no longer available locally). Swap back if it returns. */}
-          <footer className="mt-auto border-t border-gray-200 px-4 sm:px-6 py-3 text-xs text-text-muted">
-            WIP-Val · powered by World In a Pie
-          </footer>
+          {/* Swapped back to the shared WipFooter now that @wip/react (0.14.0)
+              is vendored again; it carries the CASE-472 build stamp. */}
+          <WipFooter
+            appName="WIP-Val"
+            buildStamp={import.meta.env.VITE_BUILD_STAMP}
+            buildSha={import.meta.env.VITE_BUILD_SHA}
+          />
         </div>
       </div>
     </>
