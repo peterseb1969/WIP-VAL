@@ -20,6 +20,45 @@ export function wipClient() {
   return wip()
 }
 
+// Single funnel for reporting SQL. Reporting tables live in a per-namespace
+// PG schema (CASE-628), so every query must carry the namespace — the server
+// points search_path at our schema and unqualified doc_* names keep working.
+// Pre-628 instances ignore the extra field, so this is safe on both sides of
+// the upgrade.
+export async function runReport(sql: string, params?: unknown[]) {
+  try {
+    return await wip().reporting.runQuery(sql, params, { namespace: WIP_NAMESPACE })
+  } catch (err) {
+    // A missing doc_* table means "nothing synced to reporting yet" (fresh
+    // namespace, or a blue-green reporting rebuild with zero documents) —
+    // semantically an empty result, not a server error. Tables appear on
+    // first document sync or via the bootstrap's batch-sync step.
+    if (err instanceof Error && /relation .+ does not exist/.test(err.message)) {
+      console.warn(`runReport: reporting table missing (empty result): ${err.message}`)
+      return { columns: [], rows: [], row_count: 0, truncated: false }
+    }
+    throw err
+  }
+}
+
+// Ask reporting-sync to (re)build the doc_* table for one template. Used by
+// bootstrap so a fresh namespace has queryable (empty) tables before the
+// first document sync (post-CASE-628 the tables are created lazily). The
+// client lib's triggerBatchSync has no namespace option yet, so this hits
+// the REST endpoint directly. Pre-628 instances lack the endpoint — callers
+// treat a false return as non-fatal.
+export async function triggerReportingSync(templateValue: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${WIP_BASE}/api/reporting-sync/sync/batch/${encodeURIComponent(templateValue)}?namespace=${encodeURIComponent(WIP_NAMESPACE)}`,
+      { method: 'POST', headers: { 'X-API-Key': process.env.WIP_API_KEY || '' } }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 const _templateIdCache = new Map<string, string>()
 
 export async function getTemplateIdByValue(namespace: string, value: string): Promise<string> {
@@ -242,19 +281,19 @@ export async function queryValTemplates(
   const offset = (page - 1) * pageSize
   const pattern = search ? `%${search.replace(/[%_]/g, '\\$&')}%` : '%'
   const [data, count] = await Promise.all([
-    wip().reporting.runQuery(
+    runReport(
       `SELECT ${VAL_TEMPLATE_COLS} FROM doc_val_template
        WHERE status = 'active' AND name ILIKE $1
        ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
       [pattern, pageSize, offset]
     ),
-    wip().reporting.runQuery(
+    runReport(
       `SELECT COUNT(*)::int AS total FROM doc_val_template
        WHERE status = 'active' AND name ILIKE $1`,
       [pattern]
     ),
   ])
-  const total = (count.rows[0] as unknown as Record<string, unknown>)['total'] as number
+  const total = ((count.rows[0] as unknown as Record<string, unknown> | undefined)?.['total'] as number | undefined) ?? 0
   return {
     items: data.rows.map(r => rowToValTemplate(r)),
     total,
@@ -263,7 +302,7 @@ export async function queryValTemplates(
 }
 
 export async function getValTemplateDoc(id: string): Promise<ValTemplateRow> {
-  const result = await wip().reporting.runQuery(
+  const result = await runReport(
     `SELECT ${VAL_TEMPLATE_COLS} FROM doc_val_template
      WHERE document_id = $1 AND status = 'active' LIMIT 1`,
     [id]
@@ -366,7 +405,7 @@ interface ColumnRow {
 }
 
 export async function queryColumnsForTemplate(templateDocId: string): Promise<ColumnRow[]> {
-  const result = await wip().reporting.runQuery(
+  const result = await runReport(
     `SELECT document_id, column_name, display_name, column_index, column_type,
             required, lov_terminology, description, pattern, min_value, max_value
      FROM doc_val_column

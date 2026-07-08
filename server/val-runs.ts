@@ -1,6 +1,6 @@
 import type { Request, Response, RequestHandler } from 'express'
-import { createWipClient } from '@wip/client'
 import {
+  runReport,
   downloadFile,
   deleteDocument,
   patchDocument,
@@ -12,14 +12,6 @@ import {
   WIP_NAMESPACE,
 } from './wip-api.js'
 import { validateSheet, type ColumnSpec } from './validate.js'
-
-const WIP_BASE = process.env.WIP_BASE_URL || 'https://localhost:8443'
-
-function wip() {
-  const key = process.env.WIP_API_KEY
-  if (!key) throw new Error('WIP_API_KEY not set')
-  return createWipClient({ baseUrl: WIP_BASE, auth: { type: 'api-key', key } })
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,7 +62,7 @@ export function listValRunsHandler(): RequestHandler {
       const offset = (page - 1) * pageSize
 
       const [data, count] = await Promise.all([
-        wip().reporting.runQuery(
+        runReport(
           `SELECT r.document_id, r.version, r.created_at, r.run_status, r.row_count,
                   r.error_count, r.warning_count, r.run_at, r.run_by,
                   r.source_file_file_id AS source_file, r.source_filename, r.template,
@@ -84,7 +76,7 @@ export function listValRunsHandler(): RequestHandler {
            LIMIT $3 OFFSET $4`,
           [templateFilter, statusFilter, pageSize, offset]
         ),
-        wip().reporting.runQuery(
+        runReport(
           `SELECT COUNT(*)::int AS total FROM doc_val_run
            WHERE status = 'active'
              AND ($1::text IS NULL OR template = $1)
@@ -93,7 +85,7 @@ export function listValRunsHandler(): RequestHandler {
         ),
       ])
 
-      const total = (count.rows[0] as unknown as Record<string, unknown>)['total'] as number
+      const total = ((count.rows[0] as unknown as Record<string, unknown> | undefined)?.['total'] as number | undefined) ?? 0
       res.json({
         items: data.rows.map(r => rowToValRun(r)),
         total,
@@ -113,7 +105,7 @@ export function getValRunHandler(): RequestHandler {
   return async (req: Request, res: Response) => {
     try {
       const { id } = req.params
-      const result = await wip().reporting.runQuery(
+      const result = await runReport(
         `SELECT r.document_id, r.version, r.created_at, r.run_status, r.row_count,
                 r.error_count, r.warning_count, r.run_at, r.run_by,
                 r.source_file_file_id AS source_file, r.source_filename, r.template,
@@ -143,7 +135,7 @@ export function downloadRunFileHandler(): RequestHandler {
   return async (req: Request, res: Response) => {
     try {
       const { id } = req.params
-      const result = await wip().reporting.runQuery(
+      const result = await runReport(
         `SELECT source_file_file_id AS source_file, source_filename FROM doc_val_run
          WHERE document_id = $1 AND status = 'active' LIMIT 1`,
         [id]
@@ -204,7 +196,7 @@ export function revalidateRunsHandler(): RequestHandler {
       }
 
       // Load run documents
-      const runsResult = await wip().reporting.runQuery(
+      const runsResult = await runReport(
         `SELECT document_id, source_file_file_id AS source_file, source_filename, template
          FROM doc_val_run
          WHERE document_id = ANY($1) AND status = 'active'`,

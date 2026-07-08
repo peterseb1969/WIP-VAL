@@ -10,7 +10,7 @@ import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import type { FieldDefinition } from '@wip/client'
-import { wipClient, WIP_NAMESPACE } from './wip-api.js'
+import { wipClient, triggerReportingSync, WIP_NAMESPACE } from './wip-api.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const SEED_DIR = join(__dir, '..', 'data-model')
@@ -136,6 +136,15 @@ export async function runBootstrap(onProgress: (e: BootstrapProgress) => void): 
       })
       onProgress({ step: 'template', detail: `${tpl.value} created` })
     }
+  }
+
+  // Create the per-namespace reporting tables (CASE-628: they're lazy —
+  // absent until first sync, and our list endpoints read them via SQL).
+  // Non-fatal: pre-628 instances lack the endpoint, and the app tolerates
+  // missing tables (runReport returns empty).
+  for (const tpl of templates) {
+    const ok = await triggerReportingSync(tpl.value)
+    onProgress({ step: 'reporting', detail: `${tpl.value}: ${ok ? 'table sync triggered' : 'batch-sync endpoint unavailable (skipped)'}` })
   }
 
   // "Latest active" template resolution has a 5s cache TTL (PoNIF #6) —
