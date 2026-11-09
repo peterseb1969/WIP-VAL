@@ -8,7 +8,7 @@ supersedes: WIP-KB/papers/k8s-from-start-app-yac-recipe.md
 # The wip-deployable app contract
 
 **Audience:** every YAC about to scaffold or maintain a WIP app — backend, frontend, or full-stack — regardless of whether the target install runs on compose, k8s, or apps-only against a remote WIP.
-**Goal:** ship the app so that `wip-deploy install --target <anything> --app <name> --app-source <path>` brings it up healthy on the first try, and the SPA loads at `https://<host>:<port>/apps/<name>/` without manual env patching or container massaging.
+**Goal:** ship the app so that `wip-deploy install --target <anything> --app <name> --app-source <path>` brings it up healthy on the first try, and the SPA loads at the root of its own origin, `https://<label>.<host>:<port>/`, without manual env patching or container massaging.
 **Provenance:** synthesized 2026-05-14 from the May 13–14 cross-host validation arc and the WIP-KB / WIP-AA containerization work. Supersedes `WIP-KB/papers/k8s-from-start-app-yac-recipe.md` — title and scope generalized; the contract isn't k8s-specific.
 
 ---
@@ -32,12 +32,13 @@ The contract has two halves — what the **source repo** must look like, and wha
 | File | Requirement |
 |---|---|
 | `Dockerfile.dev` | At the path containing `package.json`. Runs `npm run dev`. **No baked `node_modules`** — the deployer mounts a named volume so dev rebuilds are warm. Alpine + curl. Pattern verbatim from `apps/react-console` and `apps/clintrial-explorer`. |
-| `vite.config.ts` (frontend apps) | `server.host: '0.0.0.0'` (without it Caddy → Vite → ECONNREFUSED inside the container). Dev `proxy` keys prefixed with `BASE_PATH` and pointing at **this app's Express port** (not 3001 by clintrial-copy-paste reflex). `base` derived from `VITE_BASE_PATH || APP_BASE_PATH || '/'`. |
-| `docker-entrypoint-dev.sh` (optional, recommended) | Hash-gated `npm ci` populate so dev container restarts don't re-run `ci` unnecessarily. See `apps/react-console/docker-entrypoint-dev.sh` for the canonical pattern. |
-| `server/index.ts` (Express apps) | All routes mounted on an `express.Router()` under `APP_BASE_PATH`. `app.set('trust proxy', 1)` for HTTPS termination. `requireAuth()` middleware passes through when `OIDC_ISSUER` is unset (apps-only / dev mode). In `NODE_ENV=production`, serve `dist/` statically with a SPA fallback. |
-| Runtime app-config route (CASE-551) | `GET ${APP_BASE_PATH}/api/app-config` returns the deployment's client-visible config as JSON — at minimum `{"namespace": <WIP_NAMESPACE or null>}`; multi-namespace apps add their extra keys (e.g. `library_namespace`). Allowlist only: never an env dump, never secrets (the response reaches every browser); `Cache-Control: no-store`. The SPA fetches this at boot (scaffold: `src/lib/app-config.ts`) for **every** client-visible per-deployment value — never mirror such values into `VITE_*` build bakes; a bake and runtime env are two sources that drift silently (`VITE_BASE_PATH` is the one deliberate exception — consumed at bundle-emit time, loud when wrong). The scaffold emits the route inline; apps that vendor `@wip/proxy` ≥ 0.4.0 can mount its `appConfigHandler` at the same path. |
+| `vite.config.ts` (frontend apps) | `server.host: '0.0.0.0'` (without it Caddy → Vite → ECONNREFUSED inside the container). Dev `proxy` keys (`/api`, `/wip`, …) pointing at **this app's Express port** (not 3001 by clintrial-copy-paste reflex). Vite's default `base` (`/`): the app is served at the root of its own origin, and no base path is set. |
+| `docker-entrypoint-dev.sh` (optional, recommended) | Hash-gated `npm ci` populate so dev container restarts don't re-run `ci` unnecessarily. The canonical version is `scripts/scaffold-query/docker-entrypoint-dev.sh` in the WIP repo, which `--preset query` copies into new apps. It runs only at container start: see "a dependency change reaches the dev container only when it restarts" below. |
+| `server/index.ts` (Express apps) | All routes mounted at `/`: the app is served at the root of its own origin. `app.set('trust proxy', 1)` for HTTPS termination. `requireAuth()` middleware passes through when `OIDC_ISSUER` is unset (apps-only / dev mode). In `NODE_ENV=production`, serve `dist/` statically with a SPA fallback. The fallback excludes the API prefixes: an unmatched route under `/api`, `/auth`, `/wip`, `/server-api` or `/mcp` (plus any prefix the app adds) returns `404` JSON for any method, never `index.html`. |
+| Runtime app-config route (CASE-551) | `GET /api/app-config` returns the deployment's client-visible config as JSON — at minimum `{"namespace": <WIP_NAMESPACE or null>}`; multi-namespace apps add their extra keys (e.g. `library_namespace`). Allowlist only: never an env dump, never secrets (the response reaches every browser); `Cache-Control: no-store`. The SPA fetches this at boot (scaffold: `src/lib/app-config.ts`) for **every** client-visible per-deployment value — never mirror such values into `VITE_*` build bakes; a bake and runtime env are two sources that drift silently. The scaffold emits the route inline; apps that vendor `@wip/proxy` ≥ 0.4.0 can mount its `appConfigHandler` at the same path. |
 | Client fetches | Every URL prefixed with `import.meta.env.BASE_URL` — *never* bare `/api/...` or `/wip/...`. |
-| `Dockerfile` (production) | Multi-stage. Build stage takes `VITE_BASE_PATH` as ARG and bakes it into the static bundle. Production stage runs the server via `tsx server/index.ts` (or your app's entry), exposes the app's port, healthchecks `${APP_BASE_PATH}/api/health`. |
+| `wipProxy` mount order (`@wip/proxy` ≥ 0.5.0) | The proxy streams both directions (O(1) memory in payload size — large archive uploads/downloads pass through flat; no bespoke streaming routes needed). Consequence: it consumes the request as a raw stream, so it must be mounted **before** any body-parsing middleware (`express.json()`, …) that would match the same paths — a parser ahead of the proxy drains the body and an empty stream is forwarded. The deprecated `bodyLimit` option is a no-op. |
+| `Dockerfile` (production) | Multi-stage. Build stage builds the static bundle with Vite's default base `/`. Production stage runs the server via `./node_modules/.bin/tsx server/index.ts` (or your app's entry), exposes the app's port, healthchecks `/api/health`. **If the manifest declares an HTTP healthcheck, the runtime image MUST contain `curl` or `wget`** — the rendered probe is a shell `curl \|\| wget` chain; an image with neither (e.g. `node:*-slim`, distroless — alpine bases get busybox `wget` for free) exits 127 on every probe and reports permanently unhealthy while the app serves fine, and the install's health-wait fails pointing at the app. Fix: install `wget` in the runtime stage (~2 MB), use an alpine base, or drop `spec.healthcheck` — the container then shows plain `Up` with no health status, like the platform router. `wip-deploy check-app-deployability` pre-flights this. **The runtime stage must also contain the app's bootstrap seed directory** (`server/seed/` by default, or whatever `SEED_DIR` points at): the bootstrap reads it at runtime, resolved from the working directory. If you bundle the server (e.g. esbuild into `dist/server/`), the bundle does not carry the seeds, and a module-relative seed path no longer points at them — copy the seed dir explicitly. A missing seed dir fails the bootstrap with its resolved path before anything is written. **The image starts without fetching anything:** whatever the start command runs (tsx, for the scaffold) is in the image, listed under `dependencies` in `package.json` rather than `devDependencies`, and the CMD runs it by path (`./node_modules/.bin/tsx`), not through `npx`. A plain `npx tsx` downloads tsx from the npm registry at every start when the image lacks it, as a runtime stage that installs with `npm ci --omit=dev` does when tsx is a devDependency. An install without registry access (air-gapped, a firewalled cluster, an npm outage) then cannot start the app, and the version that runs is whatever the registry serves. `npx --no-install` installs nothing, but with the runner missing it still asks the registry before failing: offline, the start fails on a DNS error naming the registry, after retries. By path, a missing runner fails at once, naming the file. `wip-deploy check-app-deployability` fails a plain `npx` and a runner the image cannot contain. |
 | `.dockerignore` | Excludes `node_modules`, `dist`, `*.log`, `.git`. Be careful with `*.md` — narrow it to `/*.md` and add explicit excludes for `papers/` / `docs/`, **not** an unscoped `*.md` that catches runtime files like `server/prompts/assistant.md`. |
 | Readme | A `## Development with wip-deploy` section documenting the contract surface for human readers. Two paragraphs. Pointers at this paper. |
 
@@ -45,24 +46,28 @@ The contract has two halves — what the **source repo** must look like, and wha
 
 ```yaml
 spec:
+  namespaces:                              # the namespaces your app owns (see below)
+    - {role: main, name: <your-namespace>, env: WIP_NAMESPACE}
   ports:
     - {name: http, container_port: <your-express-port>}
     - {name: dev,  container_port: <your-vite-port>}   # Vite, used with --app-source
   env:
     required:
       - {name: WIP_BASE_URL,   source: {from_component: router}}
-      - {name: WIP_API_KEY,    source: {from_secret: api-key}}
       - {name: PORT,           source: {literal: "<your-express-port>"}}
-      - {name: APP_BASE_PATH,  source: {literal: "/apps/<name>"}}
       - {name: NODE_ENV,       source: {literal: "production"}}
     optional:
       - {name: MCP_URL,            source: {literal: "http://wip-router:8080/mcp"}}  # if app uses MCP
-      - {name: ANTHROPIC_API_KEY,  source: {from_secret: anthropic-api-key}}         # if app uses Claude
+      - {name: ANTHROPIC_API_KEY,  source: {from_secret: anthropic-api-key, supplied_by: operator}}  # if app uses Claude
   routes:
-    - {path: /apps/<name>, auth_required: true}
+    - {path: /, auth_required: true}
   healthcheck:
-    endpoint: /apps/<name>/api/health   # MUST be locally answerable, must not require WIP reachable
+    endpoint: /api/health   # MUST be locally answerable, must not require WIP reachable
+    # liveness_endpoint: /api/livez  # optional, k8s only: set it if `endpoint` checks a
+    #   dependency, so an outage stops routing (readiness) instead of restarting the pod (liveness)
 ```
+
+A secret the deployer cannot make up, such as an API key for an outside service, is declared `supplied_by: operator` on an **optional** var. The deployer never generates it: it fills the var whenever the operator has put the secret in the install's store (`~/.wip-deploy/<install>/secrets/anthropic-api-key`) and prints a `note:` naming the app, the var and the expected file when it is absent. Without the marker, an optional `from_secret` is filled only when the deployer itself generates that secret for an active component, so an operator-placed key would never reach the app.
 
 Port choice: pick one Express port and one Vite port from the `apps/` directory's existing range. RC = 3001/5173, CT = 3002/5174, KB = 3012/5173 (KB collides with RC on Vite; pick fresh), AA = 3014/5180. Coordinate via case-helper if the range gets crowded.
 
@@ -70,22 +75,22 @@ Port choice: pick one Express port and one Vite port from the `apps/` directory'
 
 ```bash
 wip-deploy install --target dev --app <name> --app-source <name>=~/Development/WIP-<name>
-open https://localhost:8443/apps/<name>/
+open https://<label>.wip.localhost:8443/
 ```
 
-The SPA must load. `curl -sk https://localhost:8443/apps/<name>/api/health` must return `{"status":"ok",...}`. `curl -sk https://localhost:8443/apps/<name>/api/app-config` must return JSON carrying a `namespace` key — the deployment's WIP namespace or `null` (proves the runtime config source the client boots from, CASE-551). `curl -sk https://localhost:8443/apps/<name>/wip/api/registry/namespaces` must return the WIP install's namespaces (proves the server-side proxy works). Container must be marked healthy by podman within 30s, no manual env patching, no `--force-recreate` dance. If any of these fail, the contract has a gap — file a case naming which step broke.
+The SPA must load. `curl -sk https://<label>.wip.localhost:8443/api/health` must return `{"status":"ok",...}`. `curl -sk https://<label>.wip.localhost:8443/api/app-config` must return JSON carrying a `namespace` key — the deployment's WIP namespace or `null` (proves the runtime config source the client boots from, CASE-551). `curl -sk https://<label>.wip.localhost:8443/wip/api/registry/namespaces` must return the WIP install's namespaces (proves the server-side proxy works). Container must be marked healthy by podman within 30s, no manual env patching, no `--force-recreate` dance. If any of these fail, the contract has a gap — file a case naming which step broke.
 
-A future `/check-app-deployability <app-source-dir>` slash command automates this verification — it parses the manifest, greps the source repo, and reports each contract item with ✓ / ✗.
+`wip-deploy check-app-deployability <app-source-dir>` (add `--manifest <path>` when the manifest is not found automatically) automates the source-side half of this verification — it parses the manifest, greps the source repo, and reports each contract item with ✓ / ✗.
 
 ---
 
 ## What breaks when you skip step N
 
-The contract is small. The failure signatures when you skip a step are specific enough to recognize.
+The contract is small. The failure signatures when you skip a step are specific enough to recognize. The entries headed "Followed, not skipped" at the end are different: everything is in place, and the failure comes from how the pieces behave at runtime.
 
 ### Skip 1: no `Dockerfile.dev`
 
-**Failure:** Container falls back to the production `Dockerfile`. Deployer forces `NODE_ENV=development` (the --app-source contract) but the entry-point is `tsx server/index.ts` running production-mode code paths. SPA static serve at line `if (NODE_ENV === 'production')` is guarded off in dev → bare `/apps/<name>/` returns **404 Cannot GET**.
+**Failure:** Container falls back to the production `Dockerfile`. Deployer forces `NODE_ENV=development` (the --app-source contract) but the entry-point is `tsx server/index.ts` running production-mode code paths. SPA static serve at line `if (NODE_ENV === 'production')` is guarded off in dev → the app's origin root returns **404 Cannot GET**.
 
 **Symptom signature:** healthy container, 404 on the SPA root, server logs show production-stage entry-point with `NODE_ENV=development` (contradiction).
 
@@ -95,7 +100,7 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 **Failure:** Vite binds to `localhost` inside the container. Caddy proxies `<container>:5173` and gets ECONNREFUSED. The container is healthy (Express on 3012 answers) but the SPA never loads.
 
-**Symptom signature:** Caddy logs `dial tcp [container-ip]:5173: connect: connection refused`. Browser hangs on `/apps/<name>/`.
+**Symptom signature:** Caddy logs `dial tcp [container-ip]:5173: connect: connection refused`. Browser hangs on the app's origin.
 
 **Origin:** surfaced on WIP-KB; WIP-AA later landed it pre-emptively after reading the recipe.
 
@@ -109,23 +114,23 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 ### Skip 4: no `dev` port in manifest
 
-**Failure:** Caddy routes `/apps/<name>/*` to the only declared port (the http/Express port). Express's SPA static serve is `NODE_ENV === 'production'`-gated and the deployer forces development for --app-source. The bare `/apps/<name>/` 404s. HMR never works.
+**Failure:** Caddy routes the app's origin to the only declared port (the http/Express port). Express's SPA static serve is `NODE_ENV === 'production'`-gated and the deployer forces development for --app-source. The origin's root 404s. HMR never works.
 
 **Symptom signature:** identical to Skip 1, but caused by the manifest, not the Dockerfile. `kubectl get pod <pod> -o yaml | grep -A 5 ports` (k8s) or `podman inspect <container>` (compose) shows only the http port.
 
 ### Skip 5: no `MCP_URL` env declared
 
-**Failure (apps using MCP):** App boots; `agent.ts` falls back to `stdio` transport, tries to spawn `python -m wip_mcp` inside the container. Container is `node:20-alpine` — no Python. Crash loop with `ECONNREFUSED` after the spawn fails.
+**Failure (apps using MCP):** App boots; `agent.ts` falls back to `stdio` transport, tries to spawn `python -m wip_mcp` inside the container. Container is `node:24-alpine` — no Python. Crash loop with `ECONNREFUSED` after the spawn fails.
 
 **Symptom signature:** container restart-loops. Logs show `MCP client error: ECONNREFUSED` or `python: command not found`. The app's chat / agent surface is dead even though everything else works.
 
-### Skip 6: client fetches are bare absolute paths
+### Skip 6: a base path left in the app
 
-**Failure:** Works on the host (Vite proxy handles `/api/*`). Breaks under `--app-source` and under deployment because the deployer mounts the app at `/apps/<name>/` — `fetch('/api/foo')` resolves to `https://host/api/foo`, not `https://host/apps/<name>/api/foo`. Every API call 404s.
+**Failure:** The app is served at the root of its own origin, `https://<label>.<host>/`, and is told no base path. An image still built for `/apps/<name>/` (Vite `base`, an Express router mounted under it, a router `basename`) asks for its assets and APIs under a prefix nothing serves.
 
-**Symptom signature:** SPA loads. F12 → Network shows 404s on `/api/...` URLs that don't include the BASE_PATH. The Express server's own access log shows no traffic.
+**Symptom signature:** blank page; F12 → Network shows 404s on `/apps/<name>/assets/...` and `/apps/<name>/api/...`. The manifest is refused outright when it still sets `APP_BASE_PATH` / `VITE_BASE_PATH` or declares a route or healthcheck under `/apps/`.
 
-**Origin:** every retrofit ever. `--preset query` scaffold today emits bare paths; this is the single biggest source of integration friction. The fix is `${import.meta.env.BASE_URL}<path>`.
+**Origin:** the move from `/apps/<name>/` on WIP's origin to the root of the app's own origin (CASE-1103), with no compatibility mode. `import.meta.env.BASE_URL` (Vite's default `/`) stays correct in client fetches.
 
 ### Skip 7: `/api/me` is OIDC-only
 
@@ -147,9 +152,31 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 **Failure:** App boots in `--app-source` mode (apps-only). `OIDC_ISSUER` is unset. `requireAuth()` redirects to a Dex login URL that doesn't exist. Every page redirects forever.
 
-**Symptom signature:** browser bounces between `/apps/<name>/` and a Dex URL that 404s.
+**Symptom signature:** browser bounces between the app's origin and a Dex URL that 404s.
 
 **Origin:** apps-only deployment shape. The middleware must explicitly check `if (!process.env.OIDC_ISSUER) return next()` at the top.
+
+### Followed, not skipped: the SPA fallback answers missing API routes with 200 HTML
+
+This one is different from the entries above — it bites when you implement the SPA-fallback requirement **exactly as specified**, not when you skip it. The fallback exists so deep links and reloads work (any unmatched path → `index.html`, 200). As scaffolded it is a catch-all, so it also catches **API** paths the server doesn't have: a request for a route that does not exist gets `200 text/html`, never a 404.
+
+**Failure:** a JSON client calls an API route the server lacks — typically a client newer than the gateway it talks to, which is the *normal* state during a rollout — and receives `index.html` with 200. `JSON.parse` / `json.loads` dies on `<!DOCTYPE html>…`.
+
+**Symptom signature:** `JSONDecodeError: Expecting value: line 1 column 1 (char 0)` (or the JS equivalent) that looks like a parse bug or corrupt data. The real cause is a missing route. Second-order signature: any `if status == 404 → "route not available on this instance"` degradation branch in a client is **dead code against a contract-compliant server** — it compiles, reads correctly, and has never once fired. Do not branch on 404 to detect a missing route; decide on **content-type** (got HTML where JSON was expected). Do not flatten `JSONDecodeError` into "route missing" either — that trades a loud bug for a silent one when an existing route returns malformed JSON.
+
+**Origin:** WIP-KB's read client shipped "unavailable on this instance" messages that were unreachable since the day they were written; found while testing the degradation path for a newly added verb (CASE-831 has the full analysis). Fixed consumer-side in WIP-KB by switching the guard to content-type. The cause-side fix — excluding the API prefixes from the fallback so unmatched `/api/*`, `/auth/*`, `/wip/*`, `/server-api/*`, `/mcp/*` return `404` JSON (any method) while page routes still fall through — is now a contract line (source-repo table) and ships in `--preset query` (CASE-834: an `API_PREFIXES` check ahead of the `index.html` fallback). The scaffold copies `server/index.ts` only when it creates an app, so a refresh does not change an existing app's server: apps created earlier keep the catch-all until they add the same check. Keep the client-side content-type guard anyway — it protects against every server not yet updated.
+
+### Followed, not skipped: a dependency change reaches the dev container only when it restarts
+
+Under `--app-source` the repo is bind-mounted at `/app`, so source, `package.json` and `package-lock.json` change live. `/app/node_modules` is not part of that mount: it is the named volume `<app>-node-modules`, which compose prefixes with the project name (`podman volume ls | grep node-modules` lists them). The volume outlives container recreates on purpose. Only `docker-entrypoint-dev.sh` refills it, by comparing the lockfile's hash with the one it recorded and running `npm ci` on a mismatch. That check runs once, at container start, before the entrypoint hands over to the dev command. Nothing looks at the lockfile again while the container runs.
+
+**Failure:** a commit that changes both source and `package-lock.json` is applied halfway. The dev watcher restarts the server for the source change, but the server still runs against the old dependencies. If the new code needs the new dependency version, the server crashes while starting and stays down. Vite keeps serving the SPA, so nothing looks wrong until an API call is made.
+
+**Symptom signature:** the SPA loads normally. Every API call fails with ECONNREFUSED, and Vite logs `http proxy error` for each one. The container is marked `unhealthy`. The server log ends with a crash at startup that names a dependency. A package's version under `/app/node_modules/<package>/package.json` differs from the version the bind-mounted `package.json` asks for.
+
+**Fix:** `podman restart <container>`. The entrypoint sees the changed lockfile, runs `npm ci`, and starts the server on the new dependencies. An app without `docker-entrypoint-dev.sh` has no such check, so a restart does not help: stop the container, remove its `node-modules` volume, and start it again. This cannot happen to a production image, which installs `node_modules` at build time; that is why it can go unnoticed in dev.
+
+**Origin:** WIP-KB on a local dev install, 2026-07-19. Two commits, applied in the right order in git, first moved the app to `@wip/proxy` 0.4.3 and then used a 0.4.3 feature. The container picked up the second but still had 0.4.2 in its volume. It stayed `unhealthy` for about eight hours before anyone noticed; one restart fixed it. Restarting automatically when the lockfile changes, and making unhealthy app containers visible, are still open in CASE-721.
 
 ---
 
@@ -168,21 +195,134 @@ These are platform-side guarantees the contract assumes. They're invariants toda
 
 - **External CA trust is auto-injected into app containers (Node-stack)** — when an apps-only install carries a `secrets/external-ca.crt` (seeded by `wip-deploy import-bundle`), the deployer automatically bind-mounts it read-only at **`/etc/ssl/certs/external-ca.crt`** in every app container and sets **`NODE_EXTRA_CA_CERTS`** to that path. You declare nothing — there is no manifest field; the behaviour flips on purely from the CA file's presence (the deployer's `install`/`render` auto-detect it). **Node-stack apps** pick the extra CA up transparently (Node reads `NODE_EXTRA_CA_CERTS`); **Python / Go / Rust apps ignore it** and use their own trust stores (`certifi`, the system pool, …) — harmless either way. Two reservations follow: don't unset `NODE_EXTRA_CA_CERTS`, and don't bind your own file at `/etc/ssl/certs/external-ca.crt`. Backend / full-stack installs never see this — it is apps-only. For the operator-side flow that makes the CA file exist in the first place, see `docs/design/bootstrap-bundle.md`.
 
+- **Who may open your app is a route field, enforced by the gateway** — behind the auth-gateway your app runs no OIDC client, so an in-app `ALLOWED_GROUPS` check never executes. Declare the groups on the route instead:
+
+  ```yaml
+  routes:
+    - {path: /, auth_required: true, allowed_groups: [wip-admins]}
+  ```
+
+  The gateway answers 403 to a logged-in user in none of the groups, before any request reaches your app: a short "no access" page for browsers, JSON for API callers. No session is still a login redirect, and an empty or absent list lets any logged-in user in. Group names may use letters, digits, `.`, `_` and `-`; the field requires `auth_required: true`. Keep `ALLOWED_GROUPS` only if your app also runs its own OIDC client.
+
+- **Your app is served at the root of an origin of its own** — `https://<label>.<hostname>[:port]/`, where `<label>` is your manifest's `app_metadata.label`. Routes and the healthcheck are paths on that origin, declared from `/`; there is no base path, and nothing under `/apps/` (the old URLs answer 404, with no redirect). The install's hostname needs a dot (`wip.localhost` locally, the dev default): an install that serves apps on a dotless hostname or an IP address is refused. What follows for the app:
+  - **Every browser request stays on your own origin.** A browser call to WIP's origin (`/api/…`, `/wip/…` on the bare host) is now a cross-origin request with no session: it fails. Server-side calls through `@wip/proxy` are unaffected.
+  - **Your server never sees a session cookie.** The gateway gives your origin a short-lived `wip_app_session` and removes it before the request reaches you; read identity from `X-WIP-User` / `X-WIP-Groups` as before.
+  - **Use `@wip/react`'s `WipProvider`** (0.26.0 or later), or call `useAppSessionRenewal` yourself: it renews the session in the background, so a long-open tab's `fetch` calls keep working. Without it, an app open longer than the session lifetime (15 minutes by default) sees its API calls fail until the page is reloaded.
+  - **`/auth/logout` and `/auth/userinfo` work on your origin** (relative links as before). `/auth/handoff`, `/auth/renew`, `/auth/renewed`, `/auth/logout` and `/auth/userinfo` belong to the gateway on every app origin: a route of yours cannot take them (the manifest is refused), and your server never sees those paths. The other `/auth/*` paths belong to WIP's origin.
+  - **Non-browser clients of your app's URLs** (a CLI, another service) use the app's origin, without `/apps/<name>`.
+
+- **Trust the identity headers only on routes you declare `auth_required: true`** — `X-WIP-User` and `X-WIP-Groups` come from the gateway on a protected route. On a route you declare `auth_required: false` the gateway never runs, so there is no identity to read. The front door, `wip-caddy` on every target (on k8s behind the cluster's ingress controller), removes client-sent copies:
+  - on an unprotected app route, `X-WIP-User`, `X-WIP-Groups` and `X-WIP-Auth-Method` are all removed, so your app receives none;
+  - on a protected one, the gateway's answer replaces `X-WIP-User` and `X-WIP-Groups` (or removes them), and `X-WIP-Auth-Method` is removed.
+
+  Attached apps get the same from the app edge.
+
+  So: read identity (author attribution, `/api/me`, an admin check on `x-wip-groups`) only in handlers served under an `auth_required: true` route, and never let an unprotected route's handler fall through to code that does. Don't decide anything on `X-WIP-Auth-Method`. The scaffold's `requireAdmin()` reads `x-wip-groups`: mount it only under a protected route.
+
+- **NATS access is a role, declared in the manifest** — NATS requires authentication, and an app gets a NATS user only by declaring roles:
+
+  ```yaml
+  spec:
+    nats_client:
+      roles: [ingest-producer]   # and/or nats-monitor; event-subscriber, replay-subscriber need privileged_key
+  ```
+
+  The deployer generates the user's password and injects `NATS_URL`, `NATS_USER` and `NATS_PASSWORD`. Connect with them, and set the reply-inbox prefix `_INBOX_<NATS_USER>`: the server lets each user receive replies only on its own prefix, so JetStream publish acks and pulls need it. Raw NATS subject lists in an app manifest are rejected; they are for platform components.
+
+  - **`ingest-producer`** may publish to `wip.ingest.{terminologies,terms,templates,documents}.<action>`. **Every message carries your WIP API key in its `X-API-Key` NATS header.** ingest-gateway writes the item with exactly that key, so your key's namespace grants apply. A message without the header is refused (a 401 result) and nothing is written. Use a key scoped to your namespace: the message, header included, stays in the ingest stream until the stream's size limits drop it. Reading the results stream is not part of the role, because it carries every producer's outcomes. To learn what happened to your items, ask ingest-gateway over HTTP with the same key: `GET /api/ingest-gateway/results/{correlation_id}`, or `POST /api/ingest-gateway/results/lookup` with `{"correlation_ids": [...]}` for several. You see only the outcomes of items submitted with your key; a 404 or `not_found` means not processed yet, never submitted under that key, or already dropped by the results stream's limits (outcomes older than 7 days, or the oldest once the stream is full), so poll soon after submitting. Every message must be exactly `{"correlation_id": "<non-empty>", "payload": {...}}` (optionally `metadata` and `timestamp`); anything else is refused with a 400 outcome under its `correlation_id`, and a message with no `correlation_id` cannot get an outcome at all. A bulk payload must carry its list (`documents`, `templates`, `terms`); document-store takes at most 1,000 documents per message. An item whose key ingest-gateway cannot identify yet (created a moment ago, or the keys not yet confirmed by the Registry after a restart) is retried and not written; once the retries run out it is refused, and that refusal is not readable with the key.
+  - **`event-subscriber`** may run one durable consumer on `WIP_EVENTS`, **named after your app**, and use no other stream. It receives change events from **every** namespace (event subjects carry no namespace to scope a subscription by), so only an app declaring `privileged_key: true` may declare it; the deployer refuses it for any other app. An app reads its own data through the WIP API and reporting-sync, which its key's namespace grants scope.
+  - **`replay-subscriber`** receives replayed events with a plain subscription to `wip.replay.<session>.>`. Subscribe before starting the replay. There is no JetStream access to replay streams, so events published while you are disconnected are missed. Like `event-subscriber` it sees every namespace, so it needs `privileged_key: true`.
+  - **`nats-monitor`** reads JetStream listings for a status page: account info, the stream list (configs and state) and every stream's consumer list (names and pending counts). It cannot read message contents or change any stream or consumer. react-console uses it.
+
+One **non-guarantee** belongs in the same list, because apps have assumed its opposite:
+
+- **Registered reporting views are not archived — apps own them.** WIP backup/restore carries MongoDB state only; registered SQL views (`POST /api/reporting-sync/namespace/{ns}/views`) live in PostgreSQL bookkeeping and come back **missing after every restore, by design**. An app that queries a registered view must tolerate its absence and re-register it idempotently (re-registering an existing name replaces the definition): at bootstrap, at startup, and again when a query fails on a missing relation. Registration validates the SQL against real reporting tables, which exist only after reporting-sync has synced the namespace — so a failure right after bootstrap or restore is a retry, not an error. The bootstrap scaffold ships this pattern as `server/seed/views/` + `ensureRegisteredViews()` / `ensureRegisteredViewsWithRetry()` in `bootstrap.server.ts.template`. Views registered by hand outside any app bootstrap are ephemeral: nothing recreates them after a restore.
+  The scaffold seeds an inert example, `templates/bootstrap/seed/views/_00_example.json` (`_`-prefixed files are skipped): write its SQL against the unqualified entity view `doc_<template_value>`, because it runs in the namespace's own schema and the namespace name differs between dev and deployed installs. Registering needs namespace **admin** on the app's namespace, or a `wip-admins` / `wip-services` key; the deployment's key qualifies, a `write`-granted runtime key does not.
+
+**Your app runs with a key of its own, never the install's master key.** The deployer derives one key per enabled app from its manifest, renders it into the install's key file (which the Registry imports; the key is then a Registry record wip-deploy manages) and sets `WIP_API_KEY` from it; do not declare `WIP_API_KEY` yourself, and a manifest naming `from_secret: api-key` is refused. In an apps-only install (no local backend, apps against a remote WIP) the apps run with the install's own key instead, the one `wip-deploy import-bundle` brings from the remote WIP, since the remote Registry knows no derived key. The key holds:
+
+- `admin` on every namespace in `spec.namespaces` (your bootstrap creates them and registers their views);
+- `read` or `write` on each namespace you list under `spec.namespace_access`, for namespaces another app owns or a shared one:
+
+  ```yaml
+  spec:
+    namespace_access:
+      - {namespace: library, permission: write}   # read is the default
+  ```
+
+- `read` on `wip`, the platform's shared vocabularies.
+
+Nothing else: no namespace you have not declared, no platform-admin route. Free-form SQL (`POST /api/reporting-sync/query`, the MCP `run_report_query` tool) works with your key over exactly the namespaces it can read; anything else fails with `permission denied`. Creating namespaces outside your reservations needs a platform admin key, so an app cannot do it. Calls through the platform MCP server act with your key too. Only an admin console declaring `privileged_key: true` (React Console) holds the master key. Your app never creates a namespace that is not reserved for it; when an install needs it to own or use another one (a new corpus, a shared library), the operator adds it with `wip-deploy app-namespace add`, and your key reaches it within seconds, without a restart. On create, the namespace upsert accepts any `description` you send; every other setting must match the reservation. The key rotates with `wip-deploy rotate-key app-<name>`.
+
+The app also owns its **namespace settings**, and declares them in its manifest, not in its seeds:
+
+  ```yaml
+  spec:
+    namespaces:
+      - role: main            # the role the seeds use (server/seed/namespaces.json)
+        name: myapp           # the namespace on this install
+        env: WIP_NAMESPACE    # the deployer sets it to `name`; don't also set it under env
+        settings:             # only what differs from the defaults
+          isolation_mode: strict
+          id_config: {documents: {algorithm: prefixed, prefix: "DOC-", pad: 6}}
+  ```
+
+  `settings` takes `description`, `isolation_mode`, `allowed_external_refs` (namespace names on the install), `inbound_references` (`closed` by default: other namespaces' writers need read on it; `open` admits any writer), `id_config` and `deletion_mode`. One namespace must have role `main`, and a namespace has one owning app on an install.
+
+  The deployer renders every enabled app's declarations as **namespace reservations** the Registry reads (it refuses two apps reserving one namespace, and two reservations claiming one ID prefix). A namespace has one owner across the whole install, and the install's own reservation wins: if a platform admin has already reserved your namespace through a runtime API key (for an app wip-deploy does not manage), the apply warns and names that key, and the Registry replaces the key's reservation with yours. If one of your ID prefixes is already claimed by such a reservation, the apply refuses, since one prefix names one ID sequence: pick another prefix or have the operator release the runtime reservation. With a reservation, a key holding `admin` on the namespace may create it through the namespace upsert, so your bootstrap does not need a platform admin key. It creates the namespace only as reserved: the bootstrap upserts with **no settings**, the reservation supplies them, and any setting it sends must equal the reservation's (403 naming the field otherwise). A namespace that already exists is never changed this way; changing a live namespace's settings is an operator action. `server/seed/namespaces.json` keeps the roles (`authored_as`, `env`) and `external`; a role that still carries `config` fails the bootstrap before its first write.
+
 You don't need to test these. They're stable. Just use them.
 
 ---
 
+## Attached apps: under the umbrella without wip-deploy
+
+An app its own admin deploys can be **attached** instead of deployed: a
+platform admin records it in the Registry (`POST /api/registry/attachments`,
+`docs/wip-guide.md` §6.5), and the `app-edge` component serves it at the root
+of its own origin, `https://<name>.<hostname>[:port]/`. The install must run that module: no preset includes it, so
+its operator turns it on with `wip-deploy add-module app-edge` (without it,
+the Registry refuses attachment writes with `no_app_edge`). What the app must
+do differs from a deployed app in these points:
+
+- **Be reachable from the app edge** at the upstream URL in the record:
+  scheme, host and port, no path. Not on WIP's own hosts, loopback,
+  link-local or cloud metadata addresses; those are refused.
+- **Serve at the root.** Every path on the app's origin reaches the upstream
+  as the browser sent it: there is no prefix to strip or keep.
+- **Hold its own key.** It's a Console key a platform admin creates in RC,
+  widened with `reserve` for the namespaces the app creates. Read it from a
+  file or env of the app's own deployment. The edge never hands the app a
+  key.
+- **Trust `X-WIP-User` / `X-WIP-Groups` only from the edge,** and only on
+  routes the record marks `auth_required`. The edge removes browser-sent
+  copies. If the app is also reachable directly, bypassing the edge, anyone
+  can send those headers there.
+- **Expect `X-Forwarded-Proto` / `X-Forwarded-Host`** set to the app's own
+  origin as the browser addressed it, for building absolute URLs and secure
+  cookies. Neither `wip_session` nor `wip_app_session` reaches the app.
+- **Attaching is trust.** The gateway tells the app who its visitors are, so
+  only an app its operator trusts with those identities is attached.
+
 ## Local dev with this scaffolded in
 
-With `BASE_PATH` defaulting to `/` and `import.meta.env.BASE_URL` defaulting to `/`:
+The app runs at `/` locally exactly as it is served on its origin:
 
-- Vite's dev server proxy keys become `'' + '/api'`, `'' + '/wip'`, `'' + '/server-api'` — same as a non-deployable scaffold today.
-- Express router mounts at `/` — routes resolve to identical paths.
+- Vite's dev server proxy keys are `/api` and `/wip` (the scaffold emits exactly these two; there is no `/server-api` proxy key).
+- Express router mounts at `/`.
 - All client fetches resolve to the same URLs.
 - Session cookie path is `/` — same as today.
 - OIDC stays off.
 
 **Net: zero behavior change in standalone-dev.** The contract pays no tax for being wip-deployable; it pays a one-time scaffold tax of 30 minutes and gives you push-button deployment forever after.
+
+**A browser login for your e2e suite.** Don't share `admin` or `editor`. Ask
+the install's owner for a dedicated Dex user. It's one command on their side,
+`wip-deploy user add e2e --email e2e@wip.local --group wip-editors --name <install>`,
+and the suite then reads its password from
+`~/.wip-deploy/<install>/secrets/dex-password-e2e`. Pick `wip-admins` only if
+the suite manages namespaces, grants or API keys. Details, including which
+writes record the user's email as `created_by`, are in `docs/wip-guide.md` §4.7.
 
 ---
 
@@ -212,16 +352,17 @@ What `--preset query` ships today vs. what this paper recommends:
 
 | Surface | Scaffold today | Recommended |
 |---|---|---|
-| `server/index.ts` | Routes mounted on `app`, no `BASE_PATH` | Router mounted under `APP_BASE_PATH` |
-| `vite.config.ts` | No `base`; raw dev proxy paths; default `localhost` host binding | `base: VITE_BASE_PATH \|\| APP_BASE_PATH \|\| '/'`, prefixed dev proxy, `server.host: '0.0.0.0'` |
-| `src/main.tsx` (WipClient) | `baseUrl: '/wip'` | `baseUrl: \`${import.meta.env.BASE_URL}wip\`` |
-| `src/lib/wipBulk.ts` | `fetch('/wip' + path)` | `fetch(\`${import.meta.env.BASE_URL}wip\` + path)` |
-| Inline client fetches | Bare paths | Prefixed with `${import.meta.env.BASE_URL}` |
+| `server/index.ts` | **In scaffold** — routes on an `express.Router()` mounted at `/` | Router mounted at `/` |
+| `vite.config.ts` | **In scaffold** — Vite's default base `/`, dev proxy, `host: '0.0.0.0'` | Default base, dev proxy, `server.host: '0.0.0.0'` |
+| `src/main.tsx` (WipClient) | No WipClient (the query preset's SPA talks to its own server) — an app that adds one | `baseUrl: \`${import.meta.env.BASE_URL}wip\`` |
+| `src/lib/wipBulk.ts` | Not in scaffold — an app that adds a raw fetch helper | `fetch(\`${import.meta.env.BASE_URL}wip\` + path)` |
+| Inline client fetches | **In scaffold** — prefixed with `import.meta.env.BASE_URL` | Prefixed with `${import.meta.env.BASE_URL}` |
 | `/api/me` | OIDC session only | Gateway-header sniff → OIDC → anonymous |
-| `Dockerfile.dev` | Not in scaffold | Provided as starter (canonical pattern) |
-| `Dockerfile` (production) | Not in scaffold | Two-stage; `VITE_BASE_PATH` as ARG |
-| `.dockerignore` | Not in scaffold | Provided; narrow `*.md` exclusion called out |
-| `apps/<name>/wip-app.yaml` | Not in scaffold | Provided alongside source-repo files; declares both ports + required env |
+| SPA fallback scope | **In scaffold** (CASE-834) — API prefixes excluded; apps created before it keep the catch-all | Exclude the API prefixes (`/api`, `/auth`, `/wip`, `/server-api`, `/mcp`) so unmatched API paths return 404 JSON; page routes still fall through to `index.html` |
+| `Dockerfile.dev` | **In scaffold** | Provided as starter (canonical pattern) |
+| `Dockerfile` (production) | **In scaffold** — two-stage, built with base `/`, `wget` installed in the `node:24-slim` runtime, tsx a dependency started by path (`./node_modules/.bin/tsx`) | Two-stage, built with base `/`; `curl` or `wget` in the runtime stage if the manifest declares a healthcheck; the start fetches nothing (the runner in `dependencies`, started by path, not through `npx`) |
+| `.dockerignore` | **In scaffold** | Provided; narrow `*.md` exclusion called out |
+| `apps/<name>/wip-app.yaml` | Not generated — written by hand in the WIP repo | Provided alongside source-repo files; declares both ports + required env |
 
 These are mechanical scaffold edits. The right move is filing a case (BE-YAC owns the scaffold today) to fold each into `--preset query` so the next APP-YAC doesn't relearn them.
 
@@ -232,7 +373,7 @@ These are mechanical scaffold edits. The right move is filing a case (BE-YAC own
 1. Run the scaffold (`--preset query` or the variant you're using).
 2. Before writing a single feature, do the contract — both halves. Source repo + `apps/<name>/wip-app.yaml`. 30 minutes total.
 3. Run the verification: `wip-deploy install --target dev --app <name> --app-source <name>=<your-repo>`. SPA must load on the first try.
-4. Once `/check-app-deployability` ships, run it against your repo before committing scaffold output. It catches the gaps mechanically.
+4. Run `wip-deploy check-app-deployability <your-repo>` before committing scaffold output. It catches the gaps mechanically.
 5. If something breaks, find the failure signature in the "What breaks when you skip step N" annex. File a case if the signature isn't there yet — that's how this paper stays current.
 6. Write your first feature. The scaffold is now permanent platform; the integration surface won't come back.
 
@@ -244,4 +385,4 @@ You don't have to actually deploy to k8s on day 1. You don't have to deploy at a
 
 This paper supersedes `WIP-KB/papers/k8s-from-start-app-yac-recipe.md` (KB-YAC, 2026-05-13). The original was retrofit-driven; this version is contract-driven. Title and scope generalized. The original is preserved as a stub at its old path so existing links / case references still resolve.
 
-Filed via CASE-379 (BE-YAC, 2026-05-14). Synthesizes the platform-side work from CASE-358 / CASE-359 / CASE-360 / CASE-361 / CASE-366 / CASE-374 / CASE-375 / CASE-377 / CASE-378, plus the WIP-KB and WIP-AA app-side containerization commits. Versioned-tarball invariant added 2026-06-10 (CASE-441 / CASE-442, BE-YAC). Companion modelling-discipline note added 2026-06-21 (CASE-480, FRanC) — a pointer to the canonical clause in the modelling gate, not a second copy.
+Filed via CASE-379 (BE-YAC, 2026-05-14). Synthesizes the platform-side work from CASE-358 / CASE-359 / CASE-360 / CASE-361 / CASE-366 / CASE-374 / CASE-375 / CASE-377 / CASE-378, plus the WIP-KB and WIP-AA app-side containerization commits. Versioned-tarball invariant added 2026-06-10 (CASE-441 / CASE-442, BE-YAC). Companion modelling-discipline note added 2026-06-21 (CASE-480, FRanC) — a pointer to the canonical clause in the modelling gate, not a second copy. Registered-views non-guarantee added 2026-10-13 (CASE-849 resolution, BE-YAC): archives never carry views; apps re-register idempotently.

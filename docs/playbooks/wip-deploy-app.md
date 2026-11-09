@@ -5,7 +5,9 @@ included, what runtime the dev install gives me, how the hot-reload loop
 works, how to debug my container. The *contract* your app must satisfy
 (Dockerfile.dev shape, vite binding, base-path rules, platform invariants)
 is owned by `docs/wip-deployable-app-contract.md` (bundled into this project
-by the scaffold) — read that first when building; read this when deploying.
+by the scaffold). Its checklist form is `docs/cards/ship.md` — read the card
+first when building and open the contract when the card does not answer a
+question; read this playbook when deploying.
 Operator-side lifecycle (installs, nuke, recovery) is
 `docs/playbooks/wip-deploy-be.md` in World-in-a-Pie.
 
@@ -76,25 +78,29 @@ Observed from a live render (wip-song, 2026-06-12):
 | Image | `<name>:dev`, built from your `Dockerfile.dev` | rebuilt on every install |
 | Source | your checkout bind-mounted **rw** at `/app` | edits appear in-container instantly |
 | Dependencies | named volume shadowing `/app/node_modules` | **independent of your host node_modules** — see §4 |
-| `APP_BASE_PATH`, `VITE_BASE_PATH` | `/apps/<name>` | serve everything under this |
+| Base path | none: the app is served at the root of its own origin | serve everything from `/` |
 | `PORT` | your manifest's http port | the healthcheck targets it |
 | `WIP_BASE_URL` | `http://wip-router:8080` | in-network; never localhost |
 | `MCP_URL` | `http://wip-router:8080/mcp` | requires `X-API-Key` on every request (CASE-451) |
-| `WIP_NAMESPACE` | your dev namespace | |
-| `WIP_API_KEY` | **the install admin key** (`${API_KEY}`) | ⚠ see below |
+| `WIP_NAMESPACE` | your app's namespace (`spec.namespaces`, role `main`) | |
+| `WIP_API_KEY` | **the app's own key**, set by the deployer (never the install's master key) | ⚠ see below |
 
-**The admin-key caveat (CASE-457):** the injected key is multi-namespace,
-so the "namespace derivation is automatic, omit the parameter" contract
-your app was scaffolded against does NOT hold under it. Value-form reads
-with no explicit namespace can silently return **zero rows** instead of
-erroring. Until the platform fixes land, scope reads explicitly —
-`?namespace=$WIP_NAMESPACE` on proxied WIP calls (WIP-Song ships a
-middleware for this; see CASE-457's workaround) — or don't rely on
-derivation in dev.
+**The multi-namespace caveat:** the deployer derives the key from your
+manifest — `admin` on the namespaces in `spec.namespaces`, `read` or
+`write` on those in `spec.namespace_access`, `read` on `wip` — so it
+always spans at least two namespaces. WIP derives a namespace only for a
+key scoped to exactly one, so "omit the namespace parameter" does NOT hold:
+a value-form identifier with no explicit namespace is refused (422), and a
+read without one spans every namespace the key can read. Scope calls
+explicitly —
+`?namespace=$WIP_NAMESPACE` on proxied WIP calls, or `defaultNamespace` on
+`@wip/proxy`. Only an app declaring `privileged_key: true` (an admin
+console) gets the install's master key instead.
 
-**Routing:** Caddy serves `https://localhost:8443/apps/<name>/` →
-forward-auth (gateway) → your container. Unmatched paths under the router
-return **empty 200, not 404** (§14 trap) — never use a bare 200 as
+**Routing:** Caddy serves `https://<label>.wip.localhost:8443/` (your
+manifest's `app_metadata.label`) → forward-auth (gateway) → your container.
+Five paths there are the gateway's (`/auth/handoff`, `/auth/renew`,
+`/auth/renewed`, `/auth/logout`, `/auth/userinfo`). Never use a bare 200 as
 evidence your route works; check the body.
 
 ## 4. The hot-reload loop and its boundary
@@ -117,11 +123,11 @@ evidence your route works; check the body.
 
 ```bash
 podman ps --format "{{.Names}}  {{.Status}}"   # is it (healthy)?
-podman logs --tail 50 wip-<name>               # your dev server's output
-podman exec wip-<name> env | grep WIP          # what you actually received
+podman logs --tail 50 <install>_wip-<name>               # your dev server's output
+podman exec <install>_wip-<name> env | grep WIP          # what you actually received
 ```
 
-The healthcheck hits `http://localhost:<PORT>/apps/<name>/api/health`
+The healthcheck hits `http://localhost:<PORT>/api/health`
 *inside* the container — if your server dies at startup, the container
 shows `(unhealthy)` while vite may still be running; read the logs for the
 `[0]`/`[1]` concurrently streams separately. To prove a platform endpoint
@@ -129,7 +135,7 @@ works independently of your code, probe it from inside your own container
 with your own env (the CASE-451 pattern):
 
 ```bash
-podman exec wip-<name> sh -c \
+podman exec <install>_wip-<name> sh -c \
   'wget -qO- --header="X-API-Key: $WIP_API_KEY" $WIP_BASE_URL/api/registry/health'
 ```
 

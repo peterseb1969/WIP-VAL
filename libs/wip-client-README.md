@@ -65,7 +65,7 @@ const docs = await client.documents.listDocuments({
 
 ### Soft Delete: Nothing Is Really Deleted
 
-All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from MinIO storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
+All delete operations default to setting `status: "inactive"` — records remain in the database. The exceptions are opt-in: `files.hardDeleteFile()` permanently removes the file from object storage, and `deleteDocument` / `deleteTemplate` / `deleteTerminology` / `deleteTerm` accept a `hardDelete` option (subject to the namespace's `deletion_mode` and, for terms, the terminology's `mutable` flag).
 
 ### Retry Behavior
 
@@ -79,7 +79,7 @@ GET requests retry automatically on 502/503/504 with exponential backoff (defaul
 import { createWipClient } from '@wip/client'
 
 const client = createWipClient({
-  baseUrl: '/wip',  // In browser: resolved to window.location.origin + '/wip'
+  baseUrl: `${import.meta.env.BASE_URL}wip`,  // In browser: the app's @wip/proxy mount
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
@@ -123,10 +123,11 @@ import { createWipClient, ApiKeyAuthProvider, OidcAuthProvider } from '@wip/clie
 
 const client = createWipClient({
   // Required: base URL of your WIP instance
-  // In browser behind Vite proxy: '/wip' (resolved to origin + '/wip')
+  // In browser behind the app's @wip/proxy mount: `${import.meta.env.BASE_URL}wip`
+  //   (an app is served at the root of its own origin, so that is '/wip')
   // In browser direct to Caddy: '' (resolved to window.location.origin)
   // For Node.js scripts: 'https://localhost:8443' or 'https://your-host:8443'
-  baseUrl: '/wip',
+  baseUrl: `${import.meta.env.BASE_URL}wip`,
 
   // Auth: API key, OIDC token callback, or custom AuthProvider
   auth: { type: 'api-key', key: 'your-key' },
@@ -162,16 +163,21 @@ API key auth headers are cached internally for performance (the key is static; t
 
 ## Services
 
-| Service | Property | Port | Description |
-|---------|----------|------|-------------|
-| Def-Store | `client.defStore` | 8002 | Terminologies, terms, validation, ontology, import/export |
-| Template-Store | `client.templates` | 8003 | Document schemas, versioning, draft mode, inheritance |
-| Document-Store | `client.documents` | 8004 | Documents, versions, table view, CSV export, query |
-| File-Store | `client.files` | 8004 | File upload/download (MinIO), orphan detection, integrity |
-| Registry | `client.registry` | 8001 | Namespaces, ID management, synonyms, merge |
-| Reporting-Sync | `client.reporting` | 8005 | Cross-service search, integrity checks, activity feed |
+| Service | Property | Exported class | Port | Description |
+|---------|----------|----------------|------|-------------|
+| Def-Store | `client.defStore` | `DefStoreService` | 8002 | Terminologies, terms, validation, ontology, import/export |
+| Template-Store | `client.templates` | `TemplateStoreService` | 8003 | Document schemas, versioning, draft mode, inheritance |
+| Document-Store | `client.documents` | `DocumentStoreService` | 8004 | Documents, versions, table view, CSV export, query |
+| File-Store | `client.files` | `FileStoreService` | 8004 | File upload/download (object storage), orphan detection, integrity |
+| Registry | `client.registry` | `RegistryService` | 8001 | Namespaces, ID management, synonyms, merge |
+| Reporting-Sync | `client.reporting` | `ReportingSyncService` | 8005 | Cross-service search, integrity checks, activity feed |
 
-All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind a Vite proxy, use `baseUrl: '/wip'` (resolved to `window.location.origin + '/wip'`). Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
+The service classes (plus their abstract base `BaseService`) are exported
+for typing and subclassing; in normal use you reach them through the
+client properties above rather than constructing them directly. The
+sections below document each service's methods through those properties.
+
+All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app is served at the root of its own origin (`https://<label>.<host>/`), so with Vite's default base that is `/wip`. Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 
 ---
 
@@ -293,7 +299,7 @@ const imported = await client.defStore.importTerminology({
 // Export
 const exported = await client.defStore.exportTerminology('COUNTRY', {
   format: 'json',              // or 'csv'
-  includeRelationships: true,
+  includeRelations: true,
   includeInactive: false,
   includeMetadata: true,
 })
@@ -306,7 +312,7 @@ const ontology = await client.defStore.importOntology(oboGraphJson, {
   batch_size: 1000,
   registry_batch_size: 50,
 })
-// ontology.terms.created, ontology.relationships.created, ontology.elapsed_seconds
+// ontology.terms.created, ontology.relations.created, ontology.elapsed_seconds
 ```
 
 ### Ontology Term Relations
@@ -340,8 +346,15 @@ const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
   max_depth: 10,
 })
 const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
-const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', 'wip')
-const children = await client.defStore.getChildren('NEUROLOGY', 'wip')
+
+// Direct neighbors (depth 1 by definition — no max_depth).
+// relation_type defaults to is_a on the server; pass another type to
+// follow part_of / regulates / ... links instead.
+const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE', { namespace: 'wip' })
+const children = await client.defStore.getChildren('NEUROLOGY', {
+  relation_type: 'part_of',
+  namespace: 'wip',
+})
 ```
 
 ---
@@ -487,9 +500,8 @@ const versions = await client.documents.getVersions('my-document-id')
 // Look up by identity hash
 const byIdentity = await client.documents.getDocumentByIdentity('abc123hash')
 
-// Delete (soft-delete) and archive
+// Delete (soft-delete); re-posting the document's full data brings it back
 await client.documents.deleteDocument('my-document-id', 'user@example.com')
-await client.documents.archiveDocument('my-document-id', 'user@example.com')
 
 // Validate without creating
 const validation = await client.documents.validateDocument({
@@ -551,11 +563,75 @@ const csv = await client.documents.exportTableCsv('PATIENT_RECORD', {
 })
 ```
 
+### Migrating Documents Across Template Versions
+
+A validated, identity-preserving bulk re-pin of a cohort from one template
+version to another. The two versions must declare the same `identity_fields`
+(an identity-changing move is a fork, not a migrate, and is rejected).
+Dry-run first — a dry-run with `failed === 0` guarantees a successful apply,
+barring concurrent writes:
+
+```typescript
+const preview = await client.documents.migrateDocuments({
+  template_id: 'PATIENT_RECORD',   // UUID or registered value/synonym
+  from_version: 1,
+  to_version: 2,
+  // dry_run defaults to true
+})
+
+if (preview.failed === 0) {
+  await client.documents.migrateDocuments({
+    template_id: 'PATIENT_RECORD',
+    from_version: 1,
+    to_version: 2,
+    dry_run: false,
+  })
+}
+// Per-document outcome in results[i]: status 'updated' | 'error'
+// (error_code 'validation_failed' | 'identity_fields_changed')
+```
+
+### Maintenance: Rehashing Identities
+
+A per-namespace repair pass. It requires admin permission on the namespace
+and defaults to a dry run on the server. The namespace goes in the request
+body.
+
+`rehashIdentities` recomputes the identity hash of documents whose identity
+fields are term- or reference-typed, so that documents written before the
+resolved-referent rule carry the same hash a new write would produce. It is
+synchronous (no job to poll) and slower on large namespaces. Documents that
+would converge on one identity are reported as collisions and never applied.
+Read `registry_status` per item: `applied` counts rewritten documents whether
+or not their Registry re-key succeeded.
+
+```typescript
+const preview = await client.documents.rehashIdentities({
+  namespace: 'clinic-a',
+  template_values: ['ROLE_ASSIGNMENT'],   // optional filter
+  // dry_run defaults to true
+})
+// preview.items[i].status: 'changed' | 'unresolved' | 'collision' | 'error'
+// preview.collision_groups lists documents that converge on one identity
+
+if (preview.collisions === 0 && preview.errors === 0) {
+  const applied = await client.documents.rehashIdentities({
+    namespace: 'clinic-a',
+    template_values: ['ROLE_ASSIGNMENT'],
+    dry_run: false,
+  })
+  // applied.items[i].registry_status: per-document Registry re-key outcome
+  // applied.reporting_note: how to refresh reporting (the pass does not)
+}
+```
+
+In React, use `useRehashIdentities()` from `@wip/react`.
+
 ---
 
 ## File-Store (Binary Files)
 
-Files are stored in MinIO (S3-compatible) and tracked in MongoDB. The File-Store is part of the Document-Store service (same port 8004).
+Files are stored in an S3-compatible object store (Garage) and tracked in MongoDB. The File-Store is part of the Document-Store service (same port 8004).
 
 ```typescript
 // Upload a file (accepts File or Blob)
@@ -590,7 +666,7 @@ await client.files.updateMetadata('FILE-001', {
 
 // Delete
 await client.files.deleteFile('FILE-001')           // soft-delete (sets inactive)
-await client.files.hardDeleteFile('FILE-001')        // permanent: removes from MinIO
+await client.files.hardDeleteFile('FILE-001')        // permanent: removes from object storage
 
 // Bulk delete
 await client.files.deleteFiles(['FILE-001', 'FILE-002'])

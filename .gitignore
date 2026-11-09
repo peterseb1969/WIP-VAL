@@ -20,3 +20,8 @@ test-data/
 # stray local artifacts
 .claude-context-pct
 Users/
+.mcp.json
+.claude/kb.json
+.claude/.session-id
+.claude/.session-role
+.claude/settings.local.json

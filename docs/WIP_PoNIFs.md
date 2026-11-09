@@ -34,9 +34,17 @@ The challenge is not to remove PoNIFs. It is to:
 
 **What goes wrong:** Users deactivate a term and expect all documents using it to fail. They don't — they keep working. Users expect deactivated templates to be invisible. They're not — they still resolve when documents reference them. The mental model of "inactive = deleted" is wrong; the correct model is "inactive = retired."
 
-**Sensible default:** The current behaviour is the correct default — with one important nuance that needs verification: when a term is deactivated, can new documents still use that term value? If yes, "retired" is incomplete — it should mean "existing documents keep resolving, but new documents cannot use this value." If deactivated terms are still accepted in new documents, that's a gap between the mental model and the implementation.
+**Sensible default:** The current behaviour is the correct default, and the "invisible to new data" half is enforced: term validation matches only `status: "active"` terms, so a deactivated or deprecated term is rejected in a new document while existing documents keep resolving it. (Verified in def-store's `validate_value` — the term lookup filters on active status.)
 
-Documentation should be explicit: *"Inactive means retired, not deleted. Retired entities are invisible to new data but always visible to existing data."* And the implementation should enforce the "invisible to new data" part.
+Documentation should be explicit: *"Inactive means retired, not deleted. Retired entities are invisible to new data but always visible to existing data."*
+
+**Default, not absolute.** "Nothing ever dies" is the platform **default** (namespace `deletion_mode: "retain"`), not a physical law. Three guarded deviations exist:
+
+- A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores — the record is **permanently removed**. A document that other documents still reference (in any namespace, of any version or status) is refused with `error_code: invalid_state`, `details.rule: "referenced"`, and `details.referrers` lists them; documents hard-deleted in the same request do not count. `force=true` deletes anyway, and those references then **no longer resolve**.
+- Independent of `deletion_mode`: terms in **mutable terminologies** and **binary files** are hard-deletable.
+- Privileged and internal: a trusted-service rollback primitive (wip-admins / wip-services only) can hard-delete a just-reserved, uncommitted entry, bypassing the `deletion_mode` gate — crash-recovery cleanup, not an agent-facing verb.
+
+So in a `full`-mode namespace, do not assume an old reference still resolves — it may be gone for real.
 
 ### 2. Template Versioning — Multiple Active Versions
 
@@ -56,13 +64,13 @@ The correct default is in the client library: `@wip/client` should require `temp
 
 For `updateTemplate()`, the default should be to keep the previous version active (preserving the PoNIF's power) but return a clear message: *"Template X updated to v2. Previous version v1 is still active. Pass `{ deactivatePrevious: true }` to deactivate it, or pin `template_version: 2` in document creation calls."*
 
-**Corollary — existing documents survive template updates.** The identity_hash scopes to `template_id` (see PoNIF #3), and `template_id` is canonical — stable across versions. This is the exception to WIP's "new version → new ID" pattern: templates carry one ID across all their versions, so existing docs remain matchable through future template updates. Add a non-identity field to a template, re-mirror an existing doc with the same identity values, and you get an UPDATE (new doc version, populated new field) rather than a CREATE — no data migration step needed, just a backfill pass. CASE-404's schema-extension plan rests on this corollary: 290+ existing CASE_RECORDs receive new `data.*` fields via a single `kb-bulk-mirror.py --nodes` pass, no duplicates created.
+**Corollary — existing documents survive template updates.** The identity_hash scopes to `template_id` (see PoNIF #3), and `template_id` is canonical — stable across versions. Stable-ID-across-versions is the norm for WIP's versioned entities, not an exception: documents and templates (the only two) both keep one canonical ID with integer version coordinates, unique on `(namespace, <id>, version)`. Because the template's ID is stable, existing docs remain matchable through future template updates. Add a non-identity field to a template, re-mirror an existing doc with the same identity values, and you get an UPDATE (new doc version, populated new field) rather than a CREATE — no data migration step needed, just a backfill pass. CASE-404's schema-extension plan rests on this corollary: 290+ existing CASE_RECORDs receive new `data.*` fields via a single `kb-bulk-mirror.py --nodes` pass, no duplicates created.
 
 **Moving a cohort forward (CASE-491).** The corollary handles *additive* schema changes for free. When you instead need to actively re-pin existing documents onto a newer version, that is now a first-class, validated, identity-preserving bulk operation: `migrate_documents` (MCP) / `POST /api/document-store/documents/migrate`. Dry-run first (the default) — it validates each document's existing data against the **target** version and returns a per-document readiness report (`failed == 0` ⇒ apply will succeed); apply then writes a new document version pinned to the target, keeping the same `document_id` and `identity_hash`. The source version may be inactive (frozen) — migration validates against the target, not the source — so it composes with the freeze/thaw half of the lifecycle (deactivate as a migration lock; `reactivate_template` as the safety valve, CASE-490). Migration is still never **automatic** — the system will not silently move your data; that is the PoNIF. And an *identity-changing* move is a fork (create new documents under the new template), not a migrate, and is rejected with `identity_fields_changed`.
 
-**v2 caveat.** v2's template-ID redesign (Day 29 fireside on template ID management — see `docs/design/v2-index.md`) plans to make `template_id` version-specific and route logical identity through `(namespace, template_value)`. The corollary above HOLDS in both v1 and v2 — identity stays stable across schema updates by design — but the mechanism changes. Code that names `template_id` as the canonical handle will need a rename pass when v2 lands.
+**v2 status.** The template-identity redesign (see `docs/design/template-identity-unification.md`, superseding the Day 29 fireside's direction) decided AGAINST per-version template IDs: `template_id` stays the stable canonical handle, mirroring how documents already work — versions are coordinates on an entity, not entities. What changed instead: the template's identity `(namespace, value)` is registered with the Registry as a real composite key, and template create is an upsert (same name → new version, identical → unchanged). The corollary above holds unchanged; no rename pass is coming.
 
-### 3. Document Identity — The Registry Decides
+### 3. Document Identity — The Hash Decides
 
 **The feature:** Documents don't need an explicit ID to be updated. Instead, templates define identity fields. When a document is submitted, WIP computes an identity hash from those fields. If a document with the same hash exists, it's a new version (update). If not, it's a new document (create). The same endpoint handles both — it's an upsert, not a create-or-update decision.
 
@@ -70,22 +78,25 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **Why it's non-intuitive:** 
 - Developers expect to control the ID. They expect `POST` to create and `PUT` to update. WIP's `POST` does both, and the identity fields — not the URL, not a client-provided ID — determine which.
-- If a template has zero identity fields, every submission creates a new document. There is no update path. This is by design (some data, like event logs, is append-only), but it surprises developers who expect every entity to be updatable.
+- If a template has zero identity fields, every submission creates a new document. There is **no update path at all**: the create/upsert path always appends, **and** PATCH-by-document_id is rejected outright with error code `append_only` (a `document_id` is a surrogate row handle, not a logical identity, and PATCH operates on logical entities). This is by design (some data, like event logs, is append-only), but it surprises developers who expect every entity to be updatable.
 - If the identity fields are wrong (too many — correcting a field creates a new document instead of a version; too few — different real-world entities collide), the consequences are silent and structural. There's no error — just wrong versioning behaviour.
 
 **What goes wrong:**
 - An AI adds a timestamp to the document data. Now every import creates new documents instead of updating existing ones — the timestamp makes every identity hash unique.
 - A developer defines all fields as identity fields. Now correcting a typo creates a new document instead of a new version.
-- A template has no identity fields. The developer tries to "update" a document and gets a duplicate instead.
+- A template has no identity fields. The developer re-POSTs to "update" a document and gets a duplicate instead; switching to PATCH does not help either — that fails with `append_only`. To change such data, create a new document; to make the template updatable, declare identity fields.
 
 **Sensible default:** `@wip/client` should warn (not error) when creating a document against a template with zero identity fields. The warning should say: *"Template X has no identity fields. Every submission will create a new document. If you intend updates, add identity fields to the template."*
 
+**The resolved-referent feed (DECISION-2, CASE-847).** A term- or reference-typed identity field contributes the canonical ID of what it **resolves to** — the resolved `term_id`, the referenced document's `document_id` — never the submitted spelling. Two writers naming the same term by different aliases (`ClinTrial`, `clintrial`, `ct`) produce **one** identity, not a fork. Case sensitivity is the vocabulary's call: two case-variant TERMS stay distinct, two aliases of one term merge. The rule is **fail-closed**: a write whose identity field cannot be resolved (Def-Store/Registry outage) is rejected rather than hashed from the spelling. Non-identity term fields are no exception: a term value Def-Store cannot check is never written (no validation, no storage), and the write is refused as an outage (`dependency_unavailable`) instead of being admitted with a warning. The rule holds at any depth: a dotted identity path into an object field (`address.country`) follows its leaf field's type in the nested template. Accepted cost: two genuinely different things aliased onto one term now merge; that is an alias-curation problem the merge makes visible, not something a hasher can solve.
+
 **What's NOT in the identity hash:**
 
+- the submitted spelling of a term/reference identity field — the resolved referent's canonical ID feeds the hash instead (see above).
 - `template_version` — see PoNIF #2's corollary; the same canonical entity carries forward across template versions cleanly.
 - `namespace` — scoped externally via the platform's composite key `(namespace, identity_hash, template_id)`. The same `identity_hash` in two different namespaces is two different entities, not a collision.
 
-**Adding to `identity_fields` IS breaking.** Every existing doc would hash differently on next write, creating parallel orphan docs. The CASE-316 / 317 / 318 family is the canonical example: an external loader (`kb-bulk-mirror.py`) computed identity from `metadata.custom.case_number` while the template declared `identity_fields=[]`, hashes all collided to an empty key, 213 of 214 records silently dropped on the reporting-sync side. The fix (CASE-318) was to extend `identity_fields` on the template AND backfill — the additive-to-identity case requires coordinated data migration, not just a re-mirror.
+**Changing `identity_fields` is refused.** A template update or re-post with a different list fails with `identity_fields_immutable`: allowed, every existing doc would hash differently on next write and fork into parallel orphan docs, so changing identity is a fork — create a new template value. The CASE-316 / 317 / 318 family is the canonical example: an external loader (`kb-bulk-mirror.py`) computed identity from `metadata.custom.case_number` while the template declared `identity_fields=[]`, hashes all collided to an empty key, 213 of 214 records silently dropped on the reporting-sync side. The fix then (CASE-318) was to extend `identity_fields` on the template AND backfill; the platform now refuses such a change, so an identity that was wrong at design time is fixed by a new template value and a migration of the data into it.
 
 **Adding to `data.*` outside `identity_fields` is non-breaking.** Existing docs receive the new field's value on the next backfill (see PoNIF #2's corollary). This is the path CASE-404 takes for the CASE_RECORD schema extension.
 
@@ -110,9 +121,9 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **The feature:** Any entity in WIP can have multiple identifiers (synonyms) registered in the Registry. A synonym can be any key-value pair: `{"erp_id": "SAP-001"}`, `{"iban": "CH93 0076..."}`, `{"gandalf_name": "Mithrandir"}`. All synonyms resolve to the same canonical WIP ID. Lookup by any synonym is O(1), as fast as lookup by canonical ID.
 
-Additionally, two WIP IDs can be declared as synonyms of each other (merge), and a WIP ID can be deprecated in favour of another (redirect). The Registry maintains the full resolution chain. A single real-world entity can have multiple WIP IDs, not just one.
+Additionally, two WIP IDs can be merged: the deprecated entry goes inactive, records the entry it was merged into, and its ID resolves to that entry from then on — through any chain of merges. Its keys (its ID, its primary key, its synonyms) move to the surviving entry. A single real-world entity can have multiple WIP IDs, not just one.
 
-**Note on merge reversibility:** Merges are currently effectively one-way. Removing the synonym removes the link, but the deprecated entry remains inactive — there is no inactive → active transition endpoint in the Registry. A reactivation endpoint is planned as a future feature to enable clean unmerge operations. Merging is reversible — delete the synonym that linked the two IDs and they separate again.
+**Merges are one-way.** There is no unmerge: the deprecated entry's keys belong to the survivor afterwards, and nothing brings the deprecated entry back.
 
 An entity can have multiple WIP IDs. This is not a bug or an edge case — it's a legitimate state. Different systems may have independently created Registry entries for the same real-world entity before anyone knew they were the same.
 
@@ -122,7 +133,7 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 - Most systems have one ID per entity. Two at most (internal + external). The idea of an entity with an unlimited number of identifiers, all equally valid for lookup, doesn't match any ORM or API framework's assumptions.
 - The assumption that one entity = one WIP ID is deeply ingrained. In reality, an entity can have as many WIP IDs as you want — and merging them (making one a synonym of another) is how you reconcile duplicates discovered after the fact. This is a PoNIF within the PoNIF.
 - Synonym resolution happens transparently during document creation. If a reference field contains a value that matches a synonym, it resolves. The developer might not even know synonyms are being used — which is both the power and the confusion.
-- Merging two WIP IDs is reversible (delete the synonym to unmerge), but developers trained on "merge = permanent destructive operation" will be afraid to use it, or conversely, will be surprised that an unmerge is possible.
+- Merging two WIP IDs is one-way, but nothing is lost: the merged-away ID keeps resolving, to the survivor, so references stored before the merge stay valid.
 
 **What goes wrong:**
 - A developer assumes each entity has exactly one WIP ID. They discover two IDs for the same entity and panic, thinking the data is corrupt. It's not — it's the normal state before reconciliation. The merge operation exists precisely for this.
@@ -131,7 +142,7 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 
 **Sensible default:** `@wip/client` should surface the resolution path in reference errors: *"Reference 'CUS-001' for field 'customer' could not be resolved. Attempted: direct ID (not a UUID), Registry synonym (not found), business key on CUSTOMER template (no match)."* The developer needs to know *why* resolution failed, not just *that* it failed.
 
-**Corollary — synonyms work identically to canonical IDs at every comparison site, not just at lookup.** The Registry resolves a value-form, a UUID-form, and any registered synonym to the same canonical ID. That equivalence must hold at every place the platform compares references — not only when a write resolves an input, but also when a comparator checks "did this reference change?" The template compatibility checker (`POST /templates?on_conflict=validate`) resolves each reference-typed property on both sides before diffing; a stored canonical UUID vs a freshly-submitted value-form for the same entity is *not* a modification. CASE-406 closed the comparator gap that previously flagged these as phantom `modified_existing`. The principle generalizes: any new comparison site that handles references must canonicalize before comparing (`docs/Vision.md` §"References Must Resolve", `docs/design/synonym-resolution-gaps.md`).
+**Corollary — synonyms work identically to canonical IDs at every comparison site, not just at lookup.** The Registry resolves a value-form, a UUID-form, and any registered synonym to the same canonical ID. That equivalence must hold at every place the platform compares references — not only when a write resolves an input, but also when a comparator checks "did this reference change?" The template compatibility checker (which now runs on every `POST /templates` — create is an upsert; the `on_conflict` parameter is deprecated) resolves each reference-typed property on both sides before diffing; a stored canonical UUID vs a freshly-submitted value-form for the same entity is *not* a modification. CASE-406 closed the comparator gap that previously flagged these as phantom `modified_existing`. The principle generalizes: any new comparison site that handles references must canonicalize before comparing (`docs/Vision.md` §"References Must Resolve", `docs/design/synonym-resolution-gaps.md`).
 
 ### 6. Template Field Resolution Timing
 
@@ -175,9 +186,11 @@ See `docs/design/document-relationships.md` for the full design rationale, valid
 
 ### 8. `versioned: false` — Updates Overwrite In Place
 
-**The feature:** Setting `versioned: false` on an edge type (PoNIF #7) makes updates **overwrite the existing payload** instead of creating a new version. Documents under such an edge type stay at `version: 1` forever. The previous data is gone after a successful update.
+**The feature:** Setting `versioned: false` on a template with identity fields — typically an edge type (PoNIF #7) — makes updates **overwrite the existing payload** instead of creating a new version. Documents under such a template stay at `version: 1` forever. The previous data is gone after a successful update.
 
-This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It applies only to edge types today; the flag is immutable after template creation.
+This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It was introduced for edge types and is not limited to them; the flag is immutable after template creation.
+
+**Invariant: `versioned: false` requires non-empty `identity_fields`.** Overwrite-in-place means "re-address the same entity and replace it" — you cannot re-address a thing that has no identity. The combination is rejected at template create **and** update. So `versioned` is N/A for append-only (identity-less) templates, which are always `versioned: true`.
 
 **Why it's powerful:** Some relationships have identity but not history. "Monster has spell" in a bestiary changes when the bestiary author tweaks a spell list — there's no audit interest in "what spells did this monster have last year." Versioning every edge update wastes storage and obscures the current state.
 
@@ -188,11 +201,26 @@ This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does
 - Code that loads `version=N-1` to compute a diff against `version=N` returns nothing on a `versioned: false` edge type — there is no previous version.
 - `get_document_versions(id)` returns a list of length 1 forever. Code that paginates or filters this list silently does the wrong thing.
 - Audit-trail assumptions (compliance flows, change history UIs) treat `versioned: false` data the same as everything else and produce gaps.
-- Concurrency on the in-place path needs `if_match` (existing OCC token); naive overwrite logic loses concurrent updates.
+- Concurrency on the in-place path needs `if_match`, and the token is the document's `revision`, not its version (which never moves here). Each in-place write moves `revision` on; naive overwrite logic, or `if_match` set from `version`, loses concurrent updates.
 
 **Sensible default:** `template.versioned` defaults to `true` — the conservative default that preserves history. Code reading documents should check `template.versioned` (or equivalently, that `get_document_versions` returns more than one row) before assuming history exists. If you need history on a relationship, build the edge type with `versioned: true`. The flag is immutable after creation, so the choice is permanent — pick deliberately.
 
 See `docs/design/document-relationships.md` §"Versioning" for the rationale and the implementation contract.
+
+### 9. Closed by Default — Referencing Another Namespace Needs Read
+
+**What it does:** A reference from one namespace into another passes two gates. The referencing namespace's `isolation_mode` decides what it may reference: `open` (the default) means any namespace, `strict` means only itself and its `allowed_external_refs`. The referenced namespace's `inbound_references` decides who may reference it: `closed` (the default for every namespace) accepts a reference only from a writer whose key can read it, and `open` accepts any writer. `wip` is always open. Only references a write adds are checked; references the previous version already held carry over.
+
+**Why it's powerful:** A namespace's data is no longer reachable merely because someone can write somewhere else. An app with a narrowly scoped key cannot point its documents at another app's entities unless it was given read on them, and a namespace that wants to be a shared library opens itself explicitly.
+
+**Why it's non-intuitive:** The same reference succeeds with one key and fails with another. And a refusal looks exactly like a reference whose target does not exist: a closed namespace does not confirm its contents to a writer who cannot read it, so the error never says "permission".
+
+**What goes wrong:**
+
+- An app developer tests with an admin key, which passes every gate, and the deployed app's scoped key then fails on every cross-namespace reference with "not found".
+- Debugging "not found" by checking that the target exists (with an admin key) finds it, and the real cause stays hidden.
+
+**Sensible default:** Develop with the same scoped key the app will run with. When a cross-namespace reference reports "not found" and the target exists, give the writing key read on the target's namespace, or open that namespace's `inbound_references` if it is meant to be a shared library.
 
 ---
 

@@ -26,7 +26,7 @@ This is intentional. WIP provides **primitives**, not solutions:
 | **Terminologies** | Controlled vocabularies (codes, values, aliases) |
 | **Templates** | Document schemas with validation rules |
 | **Documents** | Validated, versioned data storage |
-| **Files** | Binary file storage with reference tracking (MinIO) |
+| **Files** | Binary file storage with reference tracking (Garage) |
 | **Reporting** | SQL-accessible data via PostgreSQL sync |
 
 These primitives are domain-agnostic. WIP doesn't know what a "patient", "invoice", or "sensor reading" is. You define that through terminologies and templates.
@@ -54,7 +54,7 @@ To demonstrate WIP's capabilities, demo applications must be built as **separate
 │  Terminologies │ Templates │ Documents │ Files │ SQL│
 ├─────────────────────────────────────────────┤
 │           WIP Infrastructure                │
-│  MongoDB │ PostgreSQL │ NATS │ MinIO │ Dex/OIDC │
+│  MongoDB │ PostgreSQL │ NATS │ Garage │ Dex/OIDC │
 └─────────────────────────────────────────────┘
 ```
 
@@ -247,6 +247,8 @@ Composite keys serve three purposes:
 
 3. **Efficient search**: The composite key is hashed (SHA-256) into a single value. This enables fast lookups even when composite keys have different structures (e.g., a terminology keyed on `{code, name}` vs. a term keyed on `{terminology_id, code, value}`). The hash provides a uniform index regardless of key shape.
 
+The Registry registers **identities, never states**: versions of documents and templates are coordinates on an entity, not Registry citizens (see `docs/uniqueness-and-identity.md` for the full ontology and vocabulary).
+
 ---
 
 ## Term Aliases vs Registry Synonyms
@@ -258,7 +260,7 @@ WIP has two distinct mechanisms for mapping alternative names to canonical entit
 | **Scope** | Within a terminology | Across all entity types |
 | **Purpose** | Accept variant user input for a term | Map external/legacy IDs to canonical IDs |
 | **Example** | "Mr.", "MR", "MALE" all resolve to term "Male" | `legacy_system:OLD-TPL-42` resolves to `TPL-000001` |
-| **Stored in** | Term record (`aliases` array) | Registry synonym table |
+| **Stored in** | Term record (`names`, each with an optional type and language) | Registry synonym table |
 | **Used during** | Document validation (matching user input) | Cross-system integration and migration |
 
 ### Term Aliases
@@ -268,9 +270,11 @@ Term aliases handle the problem of **user input variation**. A term for "Male" m
 ```json
 {
   "term_id": "019abc12-def3-7abc-8def-123456789abc",
-  "code": "M",
   "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
+  "names": [
+    {"value": "M", "type": "ABBREVIATION"},
+    {"value": "MR"}, {"value": "Mr"}, {"value": "Mr."}, {"value": "MALE"}, {"value": "mr"}
+  ]
 }
 ```
 
@@ -278,11 +282,14 @@ During validation, the response tells you **how** the input was matched:
 
 ```json
 {
-  "input_value": "Mr.",
   "valid": true,
-  "term_id": "019abc12-def3-7abc-8def-123456789abc",
+  "terminology_id": "019def01-...",
+  "terminology_value": "GENDER",
+  "value": "Mr.",
+  "matched_term": { "term_id": "019abc12-def3-7abc-8def-123456789abc", "value": "Male", "label": "Male" },
   "matched_via": "alias",
-  "normalized_value": "Male"
+  "suggestion": null,
+  "error": null
 }
 ```
 
@@ -342,7 +349,7 @@ The default behavior: data is never physically deleted. Documents, templates, an
 
 **Accepted deviations:**
 
-- **Binary files** (stored in MinIO) support hard-delete after soft-delete, to reclaim storage.
+- **Binary files** (stored in Garage) support hard-delete after soft-delete, to reclaim storage.
 - **Mutable terminologies** (`mutable: true`) allow hard-deletion of terms. This exists for app-scoped user-defined vocabularies (e.g., custom classifications in a clinical trial app) where users must be able to remove entries entirely, not just deprecate them. The terminology creator opts into mutability explicitly; immutable remains the default.
 - **Namespace deletion** removes all entities in a namespace. This is a development and lifecycle operation — tearing down a test namespace, removing an uninstalled app's data. It is intentionally destructive and requires explicit confirmation.
 - **Per-entity hard-delete in `deletion_mode: "full"` namespaces.** A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores, permanently removing the record. The default (`retain`) preserves the never-delete guarantee; the flip is a deliberate, guarded opt-in for namespaces whose data lifecycle genuinely requires purging.
@@ -365,6 +372,8 @@ This means services must not implement their own identity resolution as a substi
 
 **Why this matters:** The Registry's authority is what makes federation possible, what makes data migration reliable, and what makes the synonym philosophy real. If services bypass the Registry for resolution, synonyms become a feature that works sometimes — which is worse than not having it at all, because callers can't predict when it will work.
 
+**If the Registry is down, WIP is down — by design.** Every service depends on the Registry, and that dependence is the architecture, not a single point of failure to engineer around. Services must not keep working without it through fallbacks, last-known-good copies, or local resolution of identities, keys or permissions: an answer given without the Registry is an answer the identity authority did not give. Caches exist to make the Registry fast, never to stand in for it when it is unreachable — a request it cannot answer fails, and fails visibly.
+
 ### 4. Preserve Original Values
 
 Documents store both the original submitted value AND the resolved reference. This supports:
@@ -378,7 +387,7 @@ Backend selection, auth providers, and sync behavior are configured via environm
 
 ### 6. Standard Infrastructure, Swappable Auth
 
-WIP's infrastructure choices are deliberate and permanent: MongoDB for document storage, PostgreSQL for reporting, NATS for events, MinIO for files. These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping storage engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
+WIP's infrastructure choices are deliberate and stable: MongoDB for document storage, PostgreSQL for reporting, NATS for events, Garage for files (it replaced MinIO when MinIO's public image supply ended — possible precisely because the file store is spoken to over plain S3/boto3, the protocol being the stable part). These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping the database engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
 
 The exception is authentication: Dex ships as the default OIDC provider, but any OIDC-compliant provider works. This is a genuine abstraction — WIP validates JWT tokens and doesn't care who issued them.
 

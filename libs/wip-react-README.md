@@ -158,6 +158,41 @@ function MyComponent() {
 }
 ```
 
+### App origins: the session renews itself
+
+When WIP serves each app on its own origin (`https://<app>.<host>`, the
+install's `network.app_origins: subdomain`), the app holds a short-lived
+session for that origin, handed over by the auth gateway. A page load renews
+it invisibly, but a background `fetch` cannot follow the gateway's redirect,
+so `WipProvider` keeps the session fresh while the app is open: it calls
+`useAppSessionRenewal`, which loads `/auth/renew` in a hidden iframe every few
+minutes (and when a hidden tab becomes visible again) and listens for the
+gateway's answer.
+
+- Where apps are served under `/apps/<name>`, it finds no app origin after the
+  first check and stops.
+- When the WIP login has ended (logout, or expiry), the page reloads, which
+  signs in again. Pass `onSessionLost` to do something else first, such as
+  saving a draft. If the first renewal after that reload fails too, the
+  default does not reload again and warns once in the console: the renewal
+  cannot reach WIP's login at all, which happens when WIP's origin and the
+  app's are different sites (a hostname without a dot, such as `localhost`;
+  the deployer refuses app origins there).
+- When nothing answers (a dev server without the gateway), it tries again
+  later and never reloads.
+
+```tsx
+<WipProvider client={wipClient} appSession={{ onSessionLost: () => saveDraftThenReload() }}>
+  {children}
+</WipProvider>
+
+// Turn it off (and call useAppSessionRenewal yourself, or not at all):
+<WipProvider client={wipClient} appSession={false}>…</WipProvider>
+```
+
+The app's own requests must stay on its origin (every URL under its base path,
+as the app contract requires); nothing else is needed.
+
 ---
 
 ## Components
@@ -227,7 +262,7 @@ const { data: term } = useTerm('COUNTRY:United States')
 |------|---------|-----------|---------|
 | `useTemplates(params?)` | `TemplateListResponse` | 5min | always |
 | `useTemplate(id)` | `Template` | 5min | when `id` is truthy |
-| `useTemplateByValue(value)` | `Template` | 5min | when `value` is truthy |
+| `useTemplateByValue(value, { namespace? })` | `Template` | 5min | when `value` is truthy |
 
 ```tsx
 // List all active templates (latest versions only)
@@ -236,9 +271,11 @@ const { data } = useTemplates({ latest_only: true, status: 'active' })
 // Get by ID
 const { data: template } = useTemplate('PATIENT_RECORD')
 
-// Get by value code (e.g., 'PATIENT_RECORD')
-const { data: template } = useTemplateByValue('PATIENT_RECORD')
+// Get by value code (e.g., 'PATIENT_RECORD') in a given namespace
+const { data: template } = useTemplateByValue('PATIENT_RECORD', { namespace: 'clinic' })
 ```
+
+**A template value is unique only within a namespace.** Pass `namespace` whenever your key can see more than one namespace (an admin or multi-namespace key): without it the lookup returns whichever namespace's template comes first. A scoped lookup does not fall back to the `wip` namespace. With a single-namespace key, omit it; the server derives it. The namespace is part of the query key, so lookups in different namespaces never share a cache entry.
 
 ### Documents
 
@@ -248,6 +285,7 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD')
 | `useDocument(id)` | `Document` | 30s | when `id` is truthy |
 | `useQueryDocuments(query)` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
 | `useDocumentVersions(id)` | `DocumentVersionResponse` | 30s | when `id` is truthy |
+| `useTableView(templateId, params?)` | `TableViewResponse` | 30s | when `templateId` is truthy |
 | `useDocumentRelationships(id, params?)` | `DocumentListResponse` | 30s | when `id` is truthy |
 | `useTraverseDocuments(id, params?)` | `DocumentTraverseResponse` | 30s | when `id` is truthy |
 
@@ -344,7 +382,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` |
 | `useUpdateTerminology()` | `{ id, data }` | `BulkResultItem` | `terminologies.all` |
 | `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` |
-| `useCreateTerm(terminologyId)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
 | `useUpdateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
@@ -371,7 +409,6 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useUpdateDocument()` | `{ documentId, patch, ifMatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` |
 | `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` |
 | `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` |
-| `useArchiveDocument()` | `{ id, archivedBy? }` | `BulkResultItem` | `documents.all` |
 
 **Files**
 
@@ -402,23 +439,31 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
 | `useTriggerBatchSyncAll()` | `BatchSyncAllVars` | `BatchSyncResponse[]` | `reporting.batchJobs` |
-| `useTriggerBatchSync()` | `BatchSyncVars` | `BatchSyncResponse` | `reporting.batchJobs` |
+| `useTriggerBatchSync()` | `BatchSyncVars` (`template_value`, `force?`, `page_size?`, `namespace?` — required with `force`) | `BatchSyncResponse` | `reporting.batchJobs` |
 | `useTriggerTerminologySync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useTriggerTermSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useTriggerTermRelationSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useCancelBatchJob()` | `string` | `BatchJobCancelResult` | `reporting.batchJob` + `reporting.batchJobs` |
 | `useClearCompletedJobs()` | `void` | `BatchJobsCleared` | `reporting.batchJobs` |
 
+**Maintenance**
+
+The pass is per-namespace, needs admin on it, and defaults to a dry run on the server. It invalidates only after an applied pass (`dry_run: false`).
+
+| Hook | Input | Returns | Invalidates |
+|------|-------|---------|-------------|
+| `useRehashIdentities()` | `RehashIdentitiesRequest` (`namespace`, `dry_run?`, `template_values?`) | `RehashIdentitiesResponse` | `documents.all` + `registry.all` (applied pass only) |
+
 ### Single-Item Mutations
 
 ```tsx
-const createTerm = useCreateTerminology()
+const createTerminology = useCreateTerminology()
 
 // Fire-and-forget
-createTerm.mutate({ value: 'GENDER', label: 'Gender' })
+createTerminology.mutate({ value: 'GENDER', label: 'Gender' })
 
 // With callbacks
-createTerm.mutate(
+createTerminology.mutate(
   { value: 'GENDER', label: 'Gender' },
   {
     onSuccess: (result) => {
@@ -432,7 +477,7 @@ createTerm.mutate(
 )
 
 // Async/await
-const result = await createTerm.mutateAsync({ value: 'GENDER', label: 'Gender' })
+const result = await createTerminology.mutateAsync({ value: 'GENDER', label: 'Gender' })
 ```
 
 ### Bulk Mutations
@@ -507,7 +552,8 @@ Fetches a template by value and converts it to framework-agnostic form field des
 import { useFormSchema } from '@wip/react'
 
 function PatientForm() {
-  const { data: fields, isLoading } = useFormSchema('PATIENT_RECORD')
+  // Pass `namespace` when your key can see more than one (see useTemplateByValue)
+  const { data: fields, isLoading } = useFormSchema('PATIENT_RECORD', { namespace: 'clinic' })
 
   if (isLoading || !fields) return <div>Loading form...</div>
 
@@ -542,7 +588,8 @@ function PatientForm() {
 
 - **Stale time:** 5min (template stale time)
 - **Enabled:** only when `templateValue` is truthy
-- **Query key:** `[...wipKeys.templates.byValue(value), 'form-schema']`
+- **Options:** `namespace?` plus the usual query options
+- **Query key:** `[...wipKeys.templates.byValue(value, namespace), 'form-schema']`
 
 ### useBulkImport
 
@@ -639,7 +686,7 @@ wipKeys.terms.detail(id)                       → ['wip', 'terms', 'detail', id
 wipKeys.templates.all                          → ['wip', 'templates']
 wipKeys.templates.list(params?)                → ['wip', 'templates', 'list', params]
 wipKeys.templates.detail(id)                   → ['wip', 'templates', 'detail', id]
-wipKeys.templates.byValue(value)               → ['wip', 'templates', 'by-value', value]
+wipKeys.templates.byValue(value, namespace?)   → ['wip', 'templates', 'by-value', value, namespace ?? null]
 wipKeys.documents.all                          → ['wip', 'documents']
 wipKeys.documents.list(params?)                → ['wip', 'documents', 'list', params]
 wipKeys.documents.detail(id)                   → ['wip', 'documents', 'detail', id]
@@ -661,7 +708,7 @@ wipKeys.reporting.all                          → ['wip', 'reporting']
 wipKeys.reporting.integrity(params?)           → ['wip', 'reporting', 'integrity', params]
 wipKeys.reporting.activity(params?)            → ['wip', 'reporting', 'activity', params]
 wipKeys.reporting.search(params?)              → ['wip', 'reporting', 'search', params]
-wipKeys.reporting.query(sql, params?)          → ['wip', 'reporting', 'query', sql, params]
+wipKeys.reporting.query(sql, params?, namespace?) → ['wip', 'reporting', 'query', sql, params, namespace]
 wipKeys.reporting.syncStatus()                 → ['wip', 'reporting', 'sync-status']
 wipKeys.reporting.batchJobs()                  → ['wip', 'reporting', 'batch-jobs']
 wipKeys.reporting.batchJob(jobId)              → ['wip', 'reporting', 'batch-jobs', jobId]
@@ -678,7 +725,7 @@ Invalidating a parent key cascades to all children. For example, `queryClient.in
 | Templates | 5 min | Structural changes are rare |
 | Documents | 30 sec | Actively edited, need fresh data |
 | Files | 10 min | Rarely change after upload |
-| Download URLs | 1 min | MinIO pre-signed URLs are time-limited |
+| Download URLs | 1 min | Pre-signed object-storage URLs are time-limited |
 | Registry | 5 min | Namespace config rarely changes |
 | Reporting | 1 min | Activity/integrity data should be recent |
 
@@ -695,7 +742,7 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 | Mutation | Invalidates |
 |----------|-------------|
 | `useCreateTerminology` | `wipKeys.terminologies.all` |
-| `useCreateTerm(terminologyId)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
+| `useCreateTerm(terminologyId, namespace)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
 | `useCreateTemplate` | `wipKeys.templates.all` |
 | `useCreateDocument` | `wipKeys.documents.all` |
 | `useCreateDocuments` | `wipKeys.documents.all` |
