@@ -135,9 +135,18 @@ export async function initAgent() {
     return
   }
 
+  // The ask bar is optional: if the MCP server cannot be reached (no MCP_URL
+  // in a container without Python, MCP down), the rest of the app must still
+  // start. Leave mcpClient unset so /api/ask reports the agent unavailable.
   const transport = createTransport()
-  mcpClient = new Client({ name: 'wip-query-agent', version: '0.1.0' })
-  await mcpClient.connect(transport)
+  const client = new Client({ name: 'wip-query-agent', version: '0.1.0' })
+  try {
+    await client.connect(transport)
+  } catch (err) {
+    console.warn(`⚠ MCP connection failed — /api/ask will be unavailable: ${(err as Error).message}`)
+    return
+  }
+  mcpClient = client
   console.log('✓ MCP client connected')
 
   // Fetch and filter tools

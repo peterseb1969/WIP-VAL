@@ -1,4 +1,5 @@
 import 'dotenv/config'  // Must be first — loads .env before any other module reads process.env
+import './load-api-key.js'  // Second — resolves WIP_API_KEY_FILE into WIP_API_KEY
 import path from 'path'
 import { fileURLToPath } from 'url'
 import express, { Router } from 'express'
@@ -26,16 +27,14 @@ import {
   revalidateRunsHandler,
 } from './val-runs.js'
 import { checkBootstrapStatus, runBootstrap, type BootstrapProgress } from './bootstrap.js'
-
-// APP_BASE_PATH — external path prefix when deployed behind wip-router
-// (e.g. /apps/wip-val). Everything mounts on a Router under it so cookies,
-// OIDC redirects, and asset URLs all match. '/' in standalone dev.
-// See FR-YAC/papers/wip-deployable-app-contract.md.
-const BASE_PATH = (process.env.APP_BASE_PATH || '').replace(/\/$/, '') || '/'
+import { WIP_NAMESPACE } from './wip-api.js'
 
 // 3015: WIP-VAL's assigned Express port (3001=react-console, 3011/3012 taken,
 // 3014=wip-aa — coordinate via the apps/ manifests before changing).
 const PORT = parseInt(process.env.PORT || '3015')
+
+// Path prefixes that belong to APIs, never to SPA pages (see the fallback).
+const API_PREFIX_PATTERN = /^\/(api|auth|wip|server-api|mcp)(\/|$)/
 const app = express()
 const router = Router()
 
@@ -54,7 +53,7 @@ app.use(session({
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    path: BASE_PATH.endsWith('/') ? BASE_PATH : `${BASE_PATH}/`,
+    path: '/',
   },
 }))
 
@@ -68,6 +67,13 @@ router.use(requireAuth())
 // --- Health (must answer locally without WIP reachable) ---
 router.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+// --- Runtime app config: the client-visible per-deployment values. An
+// allowlist only — never an env dump, never a secret (every browser sees it).
+router.get('/api/app-config', (_req, res) => {
+  res.set('Cache-Control', 'no-store')
+  res.json({ namespace: WIP_NAMESPACE })
 })
 
 // --- Bootstrap (provision the wip-val namespace on a fresh WIP instance) ---
@@ -149,22 +155,30 @@ if (process.env.NODE_ENV === 'production') {
   const distPath = path.resolve(__dirname, '..', 'dist')
   router.use(express.static(distPath))
   const indexHtml = path.join(distPath, 'index.html')
+  // SPA fallback for page routes only. An unmatched path under an API prefix
+  // answers 404 JSON for any method, never index.html: a JSON client that
+  // reaches a route this server lacks must see a 404, not a 200 page it then
+  // fails to parse.
+  router.all(API_PREFIX_PATTERN, (_req, res) => { res.status(404).json({ error: 'not found' }) })
   router.get('/', (_req, res) => { res.sendFile(indexHtml) })
   router.get('{*path}', (_req, res) => { res.sendFile(indexHtml) })
 }
 
-// Mount everything at BASE_PATH
-app.use(BASE_PATH, router)
+// The app is served at the root of its own origin: everything mounts at '/'.
+app.use('/', router)
 
 // --- Start ---
 async function main() {
   await initAuth()
-  await initAgent()
+  // The agent backs only /api/ask; a failure there must not keep the app
+  // (and its WIP-independent healthcheck) from starting.
+  try {
+    await initAgent()
+  } catch (err) {
+    console.warn(`⚠ agent init failed — /api/ask will be unavailable: ${(err as Error).message}`)
+  }
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`)
-    if (BASE_PATH !== '/') {
-      console.log(`  base path: ${BASE_PATH}`)
-    }
   })
 }
 

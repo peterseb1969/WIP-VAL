@@ -2,8 +2,8 @@ name: Build & Push Image
 
 # Manually triggered: Actions tab -> Run workflow. Builds the production
 # image and pushes it to GHCR as ghcr.io/<owner>/wip-val:<tag>.
-# VITE_BASE_PATH must match the platform manifest's APP_BASE_PATH
-# (apps/wip-val/wip-app.yaml in World-in-a-Pie).
+# The app is served at the root of its own origin (https://wip-val.<host>/),
+# so the image is built with Vite's default base '/': no base-path build arg.
 #
 # Architecture (the WIP pattern — copied from World-in-a-Pie build.yaml,
 # validated 2026-07-03): one NATIVE job per arch (amd64 on ubuntu-latest,
@@ -67,7 +67,6 @@ jobs:
             docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMG="ghcr.io/${{ github.repository_owner }}/wip-val:${{ needs.resolve-tag.outputs.tag }}-${{ matrix.arch }}"
           docker build \
-            --build-arg VITE_BASE_PATH=/apps/wip-val/ \
             --build-arg VITE_BUILD_STAMP="$(date -u +%FT%TZ)" \
             --build-arg VITE_BUILD_SHA="$(git rev-parse --short HEAD)" \
             -t "$IMG" .

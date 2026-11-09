@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 
 # Copy package files and lib tarballs first for cache efficiency
@@ -7,10 +7,8 @@ COPY package.json package-lock.json ./
 COPY libs/ libs/
 RUN npm ci --ignore-scripts
 
-# Copy source and build
-# VITE_BASE_PATH sets the public base path for assets (e.g. /apps/wip-val/)
-ARG VITE_BASE_PATH=/
-ENV VITE_BASE_PATH=${VITE_BASE_PATH}
+# Copy source and build. The app is served at the root of its own origin,
+# so Vite builds with its default base '/' (no base-path build arg).
 # Build stamp (CASE-472) — baked from CI --build-arg; 'dev' default hides it.
 ARG VITE_BUILD_STAMP=dev
 ARG VITE_BUILD_SHA=dev
@@ -20,7 +18,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Production server
-FROM node:20-alpine AS production
+FROM node:24-alpine AS production
 WORKDIR /app
 
 # Install only production dependencies (tsx is a runtime dep — the server
@@ -46,6 +44,8 @@ ENV PORT=3015
 EXPOSE 3015
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD wget -qO- http://localhost:3015${APP_BASE_PATH:-}/api/health || exit 1
+  CMD wget -qO- http://localhost:3015/api/health || exit 1
 
-CMD ["npx", "tsx", "server/index.ts"]
+# Start tsx by path: it is a runtime dependency in the image, so the start
+# never fetches anything from the npm registry (npx would).
+CMD ["./node_modules/.bin/tsx", "server/index.ts"]

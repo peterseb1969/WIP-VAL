@@ -47,7 +47,9 @@ export interface BootstrapProgress {
 }
 
 // Namespace exists AND has at least one template → ready. A bare namespace
-// (or none) needs bootstrap; only a failure to reach WIP at all is unreachable.
+// (or none) needs bootstrap. Any failed call — WIP down, a Registry outage
+// (503), a refused key — is 'wip_unreachable', never 'needs_bootstrap':
+// reading a failure as "absent" would offer to re-seed a live namespace.
 export async function checkBootstrapStatus(): Promise<{ status: BootstrapStatus; detail?: string }> {
   let namespaces: { prefix: string }[]
   try {
@@ -59,8 +61,8 @@ export async function checkBootstrapStatus(): Promise<{ status: BootstrapStatus;
     try {
       const templates = await wipClient().templates.listTemplates({ namespace: WIP_NAMESPACE, page_size: 1 })
       if (templates.total > 0) return { status: 'ready' }
-    } catch {
-      // namespace exists but templates can't be listed — treat as needs bootstrap
+    } catch (err) {
+      return { status: 'wip_unreachable', detail: (err as Error).message }
     }
   }
   return { status: 'needs_bootstrap' }

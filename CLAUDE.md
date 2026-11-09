@@ -4,7 +4,7 @@
 
 ## What This App Does
 
-> wip-val — TODO: replace this line with what this app does.
+> wip-val — spreadsheet validation on WIP: parses vendor / C02 Excel workbooks into WIP templates, validates uploaded data against them through WIP's own document validation, records validation runs, and exports WIP templates back to Excel.
 
 ## The Golden Rule
 

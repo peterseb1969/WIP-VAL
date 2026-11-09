@@ -10,6 +10,7 @@
  */
 
 import 'dotenv/config'
+import '../server/load-api-key.js'
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
